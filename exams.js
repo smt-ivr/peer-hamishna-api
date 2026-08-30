@@ -1,10 +1,9 @@
 // פונקציית עזר לחישוב קוד המבחן הבא (לדוגמה: מ-1א ל-1ב, ומ-1ב ל-2א)
 function calculateNextCode(lastCode) {
-  if (!lastCode) return '1א'; // אם אין מבחנים בכלל
+  if (!lastCode) return '1א'; 
   
-  // חילוץ המספר והאות
   const match = lastCode.match(/^(\d+)([אב])$/);
-  if (!match) return '1א'; // גיבוי למקרה של חוסר התאמה
+  if (!match) return '1א'; 
   
   const num = parseInt(match[1], 10);
   const letter = match[2];
@@ -22,7 +21,6 @@ export default async function examsHandler(request, env) {
   
   // חילוץ קוד המבחן מהנתיב אם נשלח (לדוגמה: /peer/api/exams/1א)
   const pathParts = url.pathname.split('/');
-  // בהנחה שהנתיב הוא בדיוק: /peer/api/exams/[code]
   const examCode = pathParts[4] ? decodeURIComponent(pathParts[4]) : null; 
   
   try {
@@ -37,20 +35,34 @@ export default async function examsHandler(request, env) {
       });
     }
     
-    // 2. יצירת מבחן חדש (חישוב אוטומטי של הקוד)
+    // 2. יצירת מבחן חדש
     if (method === 'POST') {
       const body = await request.json();
       
-      // מציאת הקוד האחרון שנוצר במסד הנתונים כדי לדעת מה הקוד הבא
+      // מציאת הקוד האחרון שנוצר כדי לחשב את הקוד הבא אוטומטית
       const lastExam = await env.DB.prepare(
         "SELECT exam_code FROM exams ORDER BY id DESC LIMIT 1"
       ).first();
       
       const nextCode = calculateNextCode(lastExam ? lastExam.exam_code : null);
       
-      const result = await env.DB.prepare(
-        "INSERT INTO exams (exam_code, title) VALUES (?, ?) RETURNING *"
-      ).bind(nextCode, body.title || '').first();
+      const result = await env.DB.prepare(`
+        INSERT INTO exams (
+          exam_code, masechet, chapter_num, chapter_name, chapter_title, 
+          from_page, to_page, total_mishnayot, gemara_pages, target_grade
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *
+      `).bind(
+        nextCode, 
+        body.masechet || null,
+        body.chapter_num || null,
+        body.chapter_name || null,
+        body.chapter_title || null,
+        body.from_page || null,
+        body.to_page || null,
+        body.total_mishnayot || null,
+        body.gemara_pages || null,
+        body.target_grade || null
+      ).first();
       
       return new Response(JSON.stringify(result), { 
         status: 201, headers: { 'Content-Type': 'application/json' } 
@@ -61,9 +73,23 @@ export default async function examsHandler(request, env) {
     if (method === 'PUT' && examCode) {
       const body = await request.json();
       
-      const result = await env.DB.prepare(
-        "UPDATE exams SET title = ? WHERE exam_code = ? AND is_deleted = 0 RETURNING *"
-      ).bind(body.title, examCode).first();
+      const result = await env.DB.prepare(`
+        UPDATE exams SET 
+          masechet = ?, chapter_num = ?, chapter_name = ?, chapter_title = ?, 
+          from_page = ?, to_page = ?, total_mishnayot = ?, gemara_pages = ?, target_grade = ?
+        WHERE exam_code = ? AND is_deleted = 0 RETURNING *
+      `).bind(
+        body.masechet || null,
+        body.chapter_num || null,
+        body.chapter_name || null,
+        body.chapter_title || null,
+        body.from_page || null,
+        body.to_page || null,
+        body.total_mishnayot || null,
+        body.gemara_pages || null,
+        body.target_grade || null,
+        examCode
+      ).first();
       
       if (!result) {
         return new Response(JSON.stringify({ error: 'Exam not found or deleted' }), { status: 404 });
@@ -89,7 +115,7 @@ export default async function examsHandler(request, env) {
       });
     }
     
-    // אם מתודה לא נתמכת
+    // מתודה לא נתמכת
     return new Response(JSON.stringify({ error: 'Method Not Allowed' }), { status: 405 });
     
   } catch (error) {
