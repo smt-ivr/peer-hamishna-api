@@ -1,0 +1,9 @@
+name = "tfila"
+main = "worker.js"
+compatibility_date = "2026-05-24"
+
+# חיבור למסד הנתונים
+[[d1_databases]]
+binding = "DB"
+database_name = "tfila" # שנה לשם מסד הנתונים שיצרת
+database_id = "6e745a7f-8aae-46f9-8de2-b6b1c8d8db97" # יש להעתיק מדאשבורד קלאודפלייר
