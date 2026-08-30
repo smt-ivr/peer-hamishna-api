@@ -20,8 +20,15 @@ export default async function examsHandler(request, env) {
   if (method === 'POST' && examCode === 'bulk') {
     const examsArray = await request.json();
     
-    // הכנת שאילתה לכל מבחן במערך
-    const stmts = examsArray.map(exam => 
+    // סינון מקדים: מוודא שמוכנסים רק מבחנים שיש להם קוד מוגדר כדי למנוע שגיאות NOT NULL
+    const validExams = examsArray.filter(exam => exam && exam.exam_code);
+    
+    if (validExams.length === 0) {
+      return new Response(JSON.stringify({ error: 'No valid data to insert' }), { status: 400 });
+    }
+
+    // הכנת שאילתה לכל מבחן תקין במערך
+    const stmts = validExams.map(exam => 
       env.DB.prepare(`
         INSERT INTO exams (
           exam_code, masechet, chapter_num, chapter_name, chapter_title, 
@@ -52,7 +59,7 @@ export default async function examsHandler(request, env) {
     return new Response(JSON.stringify(results), { status: 200 });
   }
   
-  // 2. יצירת מבחן בודד (לשימוש בהמשך המערכת)
+  // 2. יצירת מבחן בודד 
   if (method === 'POST' && !examCode) {
     const body = await request.json();
     const lastExam = await env.DB.prepare("SELECT exam_code FROM exams ORDER BY id DESC LIMIT 1").first();
