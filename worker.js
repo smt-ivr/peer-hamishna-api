@@ -1,7 +1,8 @@
 import examsHandler from './exams.js';
-import studentsHandler from './students.js'; // ייבוא מודול התלמידים החדש
+import studentsHandler from './students.js';
+import studentExamsHandler from './student_exams.js'; // ייבוא מודול תוצאות המבחנים
 
-const API_VERSION = "1.1.0"; // קידמנו גירסא
+const API_VERSION = "1.2.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -25,16 +26,17 @@ export default {
         response = new Response(JSON.stringify({ 
           status: "ready", 
           version: API_VERSION,
-          message: "API is up and running with Students module!" 
+          message: "API is up and running with Student Exams module!" 
         }), { status: 200 });
       } 
-      // ניתוב למבחנים
       else if (path.startsWith('/peer/api/exams')) {
         response = await examsHandler(request, env);
       } 
-      // ניתוב לתלמידים
       else if (path.startsWith('/peer/api/students')) {
         response = await studentsHandler(request, env);
+      }
+      else if (path.startsWith('/peer/api/student-exams')) {
+        response = await studentExamsHandler(request, env);
       }
       else {
         response = new Response(JSON.stringify({ error: 'Not Found' }), { status: 404 });
