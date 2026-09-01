@@ -41,7 +41,7 @@ export async function handleYemotManager(request, env) {
     const letter = parts[1] === '1' ? 'א' : 'ב';
     const examCode = `${parts[0]}${letter}`;
 
-    // שלב 3: בדיקת המבחן וקליטת ציון (עבר/לא עבר)
+    // שלב 3: בדיקת המבחן, הקראת פרטיו וקליטת ציון
     if (!passInput) {
         // בדיקה האם המבחן עצמו קיים במערכת
         const exam = await env.DB.prepare("SELECT * FROM exams WHERE exam_code = ? AND is_deleted = 0").bind(examCode).first();
@@ -59,8 +59,15 @@ export async function handleYemotManager(request, env) {
             });
         }
 
-        // בקשת הציון עצמו (1 = עבר, 2 = לא עבר)
-        return new Response(`read=t-מבחן ${examCode}, לעדכון שעבר הקישו 1, לא עבר הקישו 2=pass_input,,1,,,NO,,,,12,,,,,no`, { 
+        // בנייה דינמית של משפט פרטי המבחן
+        let examDetails = `מבחן ${examCode}, `;
+        if (exam.masechet) examDetails += `מסכת ${exam.masechet}, `;
+        if (exam.chapter_num) examDetails += `פרק ${exam.chapter_num}, `;
+        if (exam.chapter_name) examDetails += `${exam.chapter_name}, `;
+        if (exam.from_page && exam.to_page) examDetails += `מ ${exam.from_page} עד ${exam.to_page}, `;
+
+        // בקשת הציון עצמו (1 = עבר, 2 = לא עבר) לאחר הקראת הפרטים
+        return new Response(`read=t-${examDetails} לעדכון שעבר הקישו 1, לא עבר הקישו 2=pass_input,,1,,,NO,,,,12,,,,,no`, { 
             headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
         });
     }
