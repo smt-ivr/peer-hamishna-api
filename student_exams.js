@@ -1,5 +1,14 @@
 import { getLocalTime } from './time.js'; // ייבוא הלוגיקה של השעון
 
+// פונקציית עזר להמרת נתונים בוליאניים (כדי שלא יחזור 0 או 1)
+function formatStudentExam(exam) {
+  if (!exam) return exam;
+  return {
+    ...exam,
+    passed: exam.passed === 1
+  };
+}
+
 export default async function studentExamsHandler(request, env) {
   const url = new URL(request.url);
   const method = request.method;
@@ -16,20 +25,20 @@ export default async function studentExamsHandler(request, env) {
         const { results } = await env.DB.prepare(
           "SELECT * FROM student_exams WHERE student_code = ? ORDER BY updated_at DESC"
         ).bind(studentCode).all();
-        return new Response(JSON.stringify(results), { status: 200 });
+        return new Response(JSON.stringify(results.map(formatStudentExam)), { status: 200 });
       } else {
         const { results } = await env.DB.prepare(
           "SELECT * FROM student_exams ORDER BY updated_at DESC"
         ).all();
-        return new Response(JSON.stringify(results), { status: 200 });
+        return new Response(JSON.stringify(results.map(formatStudentExam)), { status: 200 });
       }
     }
     
-    // -- הזנה מרוכזת של תוצאות (Bulk Insert) --
+    // -- הזנה מרוכזת של תוצאות לכלל המערכת (Bulk Insert) --
     if (method === 'POST' && studentCode === 'bulk') {
       const resultsArray = await request.json();
       
-      // סינון נתונים תקינים שהגיעו מה-HTML
+      // סינון נתונים תקינים 
       const validResults = resultsArray.filter(res => res && res.student_code && res.exam_code && res.passed !== undefined);
       
       if (validResults.length === 0) {
@@ -52,26 +61,57 @@ export default async function studentExamsHandler(request, env) {
       return new Response(JSON.stringify({ success: true, count: results.length }), { status: 201 });
     }
 
-    // 2. עדכון או הוספת תוצאה למבחן (בודד)
-    if (method === 'POST' || method === 'PUT') {
+    // 2. עדכון או הוספת תוצאות מבחנים לתלמיד ספציפי בקריאה אחת 
+    if (method === 'POST' && !studentCode) {
       const body = await request.json();
       
-      if (!body.student_code || !body.exam_code || body.passed === undefined) {
-         return new Response(JSON.stringify({ error: 'Missing required fields' }), { status: 400 });
+      if (!body.student_code || !Array.isArray(body.exams)) {
+         return new Response(JSON.stringify({ error: 'Expected student_code and an array of exams' }), { status: 400 });
       }
       
-      const passedValue = body.passed ? 1 : 0;
-      const currentTime = getLocalTime(); // שימוש בזמן ישראל
+      const currentTime = getLocalTime(); 
+      const results = { updated: [], skipped: [], errors: [] };
+
+      // שליפת המבחנים שכבר קיימים לתלמיד כדי להגן מפני דריסה
+      const existingExamsQuery = await env.DB.prepare(
+        "SELECT exam_code FROM student_exams WHERE student_code = ?"
+      ).bind(body.student_code).all();
       
-      const result = await env.DB.prepare(`
-        INSERT INTO student_exams (student_code, exam_code, passed, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(student_code, exam_code) 
-        DO UPDATE SET passed = excluded.passed, updated_at = ?
-        RETURNING *
-      `).bind(body.student_code, body.exam_code, passedValue, currentTime, currentTime).first();
+      const existingExamCodes = new Set(existingExamsQuery.results.map(r => r.exam_code));
+      const stmts = [];
+
+      for (const item of body.exams) {
+        if (!item.exam_code || item.passed === undefined) {
+           results.errors.push({ exam_code: item.exam_code || 'unknown', reason: 'Missing required fields' });
+           continue;
+        }
+
+        const isExisting = existingExamCodes.has(item.exam_code);
+
+        // מנגנון ההגנה: אם המבחן כבר קיים במסד ולא הועבר force_update: true נדלג עליו
+        if (isExisting && !item.force_update) {
+          results.skipped.push({ exam_code: item.exam_code, reason: 'Record exists. Use force_update: true to overwrite.' });
+          continue;
+        }
+
+        const passedValue = item.passed ? 1 : 0;
+        
+        stmts.push(
+          env.DB.prepare(`
+            INSERT INTO student_exams (student_code, exam_code, passed, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(student_code, exam_code) 
+            DO UPDATE SET passed = excluded.passed, updated_at = ?
+          `).bind(body.student_code, item.exam_code, passedValue, currentTime, currentTime)
+        );
+        results.updated.push(item.exam_code);
+      }
       
-      return new Response(JSON.stringify(result), { status: 200 });
+      if (stmts.length > 0) {
+        await env.DB.batch(stmts);
+      }
+
+      return new Response(JSON.stringify(results), { status: 200 });
     }
 
     // 3. מחיקת תוצאה
