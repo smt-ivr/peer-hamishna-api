@@ -25,7 +25,34 @@ export default async function studentExamsHandler(request, env) {
       }
     }
     
-    // 2. עדכון או הוספת תוצאה למבחן
+    // -- הזנה מרוכזת של תוצאות (Bulk Insert) --
+    if (method === 'POST' && studentCode === 'bulk') {
+      const resultsArray = await request.json();
+      
+      // סינון נתונים תקינים שהגיעו מה-HTML
+      const validResults = resultsArray.filter(res => res && res.student_code && res.exam_code && res.passed !== undefined);
+      
+      if (validResults.length === 0) {
+        return new Response(JSON.stringify({ error: 'No valid data to insert' }), { status: 400 });
+      }
+
+      const currentTime = getLocalTime(); 
+      
+      const stmts = validResults.map(item => {
+        const passedValue = item.passed ? 1 : 0;
+        return env.DB.prepare(`
+          INSERT INTO student_exams (student_code, exam_code, passed, updated_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(student_code, exam_code) 
+          DO UPDATE SET passed = excluded.passed, updated_at = ?
+        `).bind(item.student_code, item.exam_code, passedValue, currentTime, currentTime);
+      });
+      
+      const results = await env.DB.batch(stmts);
+      return new Response(JSON.stringify({ success: true, count: results.length }), { status: 201 });
+    }
+
+    // 2. עדכון או הוספת תוצאה למבחן (בודד)
     if (method === 'POST' || method === 'PUT') {
       const body = await request.json();
       
