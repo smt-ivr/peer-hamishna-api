@@ -9,6 +9,15 @@ function calculateNextCode(lastCode) {
   return `${num + 1}א`;
 }
 
+// פונקציית עזר להמרת נתונים לפורמט בוליאני נורמלי
+function formatExam(exam) {
+  if (!exam) return exam;
+  return {
+    ...exam,
+    is_deleted: exam.is_deleted === 1
+  };
+}
+
 export default async function examsHandler(request, env) {
   const url = new URL(request.url);
   const method = request.method;
@@ -20,14 +29,12 @@ export default async function examsHandler(request, env) {
   if (method === 'POST' && examCode === 'bulk') {
     const examsArray = await request.json();
     
-    // סינון מקדים: מוודא שמוכנסים רק מבחנים שיש להם קוד מוגדר כדי למנוע שגיאות NOT NULL
     const validExams = examsArray.filter(exam => exam && exam.exam_code);
     
     if (validExams.length === 0) {
       return new Response(JSON.stringify({ error: 'No valid data to insert' }), { status: 400 });
     }
 
-    // הכנת שאילתה לכל מבחן תקין במערך
     const stmts = validExams.map(exam => 
       env.DB.prepare(`
         INSERT INTO exams (
@@ -48,7 +55,6 @@ export default async function examsHandler(request, env) {
       )
     );
     
-    // הרצה במקביל של כל ההכנסות
     const results = await env.DB.batch(stmts);
     return new Response(JSON.stringify({ success: true, count: results.length }), { status: 201 });
   }
@@ -56,7 +62,8 @@ export default async function examsHandler(request, env) {
   // 1. קבלת כל המבחנים הפעילים
   if (method === 'GET' && !examCode) {
     const { results } = await env.DB.prepare("SELECT * FROM exams WHERE is_deleted = 0 ORDER BY id ASC").all();
-    return new Response(JSON.stringify(results), { status: 200 });
+    const formattedResults = results.map(formatExam);
+    return new Response(JSON.stringify(formattedResults), { status: 200 });
   }
   
   // 2. יצירת מבחן בודד 
@@ -76,7 +83,7 @@ export default async function examsHandler(request, env) {
       body.total_mishnayot || null, body.gemara_pages || null, body.target_grade || null
     ).first();
     
-    return new Response(JSON.stringify(result), { status: 201 });
+    return new Response(JSON.stringify(formatExam(result)), { status: 201 });
   }
   
   // 3. עדכון
@@ -94,7 +101,7 @@ export default async function examsHandler(request, env) {
     ).first();
     
     if (!result) return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 });
-    return new Response(JSON.stringify(result), { status: 200 });
+    return new Response(JSON.stringify(formatExam(result)), { status: 200 });
   }
   
   // 4. מחיקה
