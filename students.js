@@ -41,6 +41,7 @@ function formatStudent(student) {
             masechet: exam.masechet,
             chapter_num: exam.chapter_num,
             chapter_name: exam.chapter_name,
+            chapter_title: exam.chapter_title,
             total_mishnayot: exam.total_mishnayot
           };
         } else if (exam.exam_type === 'gemara') {
@@ -55,6 +56,7 @@ function formatStudent(student) {
             masechet: exam.masechet,
             chapter_num: exam.chapter_num,
             chapter_name: exam.chapter_name,
+            chapter_title: exam.chapter_title,
             from_page: exam.from_page,
             to_page: exam.to_page,
             total_mishnayot: exam.total_mishnayot,
@@ -99,7 +101,6 @@ export default async function studentsHandler(request, env) {
       let baseQuery = "";
       
       if (fullDetails || studentCode) {
-        // הוספנו בשאילתת ה-SQL את e.from_page ו-e.to_page כדי שיישלפו עבור התלמיד
         baseQuery = `
           SELECT 
             s.*,
