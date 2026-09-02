@@ -106,13 +106,13 @@ export default async function studentsHandler(request, env) {
           WHERE s.is_deleted = 0
         `;
       } else {
-        // שאילתה בסיסית ומהירה ללא חישובי תגמול
-        baseQuery = `SELECT * FROM students WHERE is_deleted = 0`;
+        // שאילתה בסיסית ומהירה - כאן תוקן הבאג עם הוספת s.* ו-s
+        baseQuery = `SELECT s.* FROM students s WHERE s.is_deleted = 0`;
       }
 
       if (studentCode) {
         // תלמיד ספציפי
-        const result = await env.DB.prepare(`${baseQuery} ${fullDetails ? 'AND' : 'AND'} s.student_code = ?`).bind(studentCode).first();
+        const result = await env.DB.prepare(`${baseQuery} AND s.student_code = ?`).bind(studentCode).first();
         
         if (!result) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
         return new Response(JSON.stringify(formatStudent(result)), { status: 200 });
