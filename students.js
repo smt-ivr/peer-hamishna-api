@@ -27,7 +27,7 @@ function formatStudent(student) {
     try {
       let examsArray = typeof student.exams_details === 'string' ? JSON.parse(student.exams_details) : student.exams_details;
       
-      // עיצוב מחדש של כל מבחן (הצגת כל המבחנים שעשה, וצירוף פרמטר תגמול רק למי שעבר)
+      // עיצוב מחדש של כל מבחן בהתאם לסוג שלו
       formattedStudent.exams_details = examsArray.map(exam => {
         let isPassed = exam.passed === 1;
         let formattedExam = {
@@ -44,8 +44,11 @@ function formatStudent(student) {
             total_mishnayot: exam.total_mishnayot
           };
         } else if (exam.exam_type === 'gemara') {
+          // הוספנו כאן את from_page ו-to_page כדי שיופיעו כל הפרטים בדיוק כמו במבחנים הכלליים
           formattedExam.details = {
             masechet: exam.masechet,
+            from_page: exam.from_page,
+            to_page: exam.to_page,
             gemara_pages: exam.gemara_pages
           };
         } else {
@@ -53,6 +56,8 @@ function formatStudent(student) {
             masechet: exam.masechet,
             chapter_num: exam.chapter_num,
             chapter_name: exam.chapter_name,
+            from_page: exam.from_page,
+            to_page: exam.to_page,
             total_mishnayot: exam.total_mishnayot,
             gemara_pages: exam.gemara_pages
           };
@@ -95,7 +100,7 @@ export default async function studentsHandler(request, env) {
       let baseQuery = "";
       
       if (fullDetails || studentCode) {
-        // שימו לב: בשאילתה הזו הסרנו את הסינון se.passed = 1 כדי לשלוף את כל המבחנים שהתלמיד ביצע
+        // הוספנו בשאילתת ה-SQL את e.from_page ו-e.to_page כדי שיישלפו עבור התלמיד
         baseQuery = `
           SELECT 
             s.*,
@@ -108,6 +113,9 @@ export default async function studentsHandler(request, env) {
                     'masechet', e.masechet,
                     'chapter_num', e.chapter_num,
                     'chapter_name', e.chapter_name,
+                    'chapter_title', e.chapter_title,
+                    'from_page', e.from_page,
+                    'to_page', e.to_page,
                     'total_mishnayot', e.total_mishnayot,
                     'gemara_pages', e.gemara_pages,
                     'passed', se.passed,
@@ -200,3 +208,4 @@ export default async function studentsHandler(request, env) {
     return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   }
 }
+```[cite: 1]
