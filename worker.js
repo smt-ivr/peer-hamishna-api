@@ -2,6 +2,7 @@ import examsHandler from './exams.js';
 import studentsHandler from './students.js';
 import studentExamsHandler from './student_exams.js';
 import { handleYemotManager } from './yemot_manager.js'; // ייבוא מודול ימות המנהלים
+import { handleYemotStudents } from './yemot_students.js'; // ייבוא מודול ימות התלמידים
 
 const API_VERSION = "1.3.0";
 
@@ -39,9 +40,15 @@ export default {
       else if (path.startsWith('/peer/api/student-exams')) {
         response = await studentExamsHandler(request, env);
       }
-      // הנתיב החדש למערכת ימות המשיח (מנהלים)
+      // הנתיב למערכת ימות המשיח (אזור מנהלים להזנת ציונים)
       else if (path.startsWith('/peer/api/yemot/manager')) {
         response = await handleYemotManager(request, env);
+        // מחזירים את התשובה ישירות כטקסט עבור ימות המשיח, ולא כ-JSON
+        return response;
+      }
+      // הנתיב החדש למערכת ימות המשיח (אזור אישי לתלמידים)
+      else if (path.startsWith('/peer/api/yemot/student')) {
+        response = await handleYemotStudents(request, env);
         // מחזירים את התשובה ישירות כטקסט עבור ימות המשיח, ולא כ-JSON
         return response;
       }
@@ -50,7 +57,7 @@ export default {
       }
       
       // הוספת פקודות CORS רק לתשובות שאינן של ימות המשיח (ימות המשיח מקבלת טקסט נקי)
-      if (path.startsWith('/peer/api/yemot/manager')) {
+      if (path.startsWith('/peer/api/yemot/manager') || path.startsWith('/peer/api/yemot/student')) {
           return response;
       }
 
