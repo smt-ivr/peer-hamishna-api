@@ -22,12 +22,10 @@ function formatStudent(student) {
     is_deleted: student.is_deleted === 1
   };
 
-  // טיפול בשדות המורחבים במידה והם קיימים
   if (student.hasOwnProperty('exams_details')) {
     try {
       let examsArray = typeof student.exams_details === 'string' ? JSON.parse(student.exams_details) : student.exams_details;
       
-      // עיצוב מחדש של כל מבחן בהתאם לסוג שלו
       formattedStudent.exams_details = examsArray.map(exam => {
         let isPassed = exam.passed === 1;
         let formattedExam = {
@@ -47,6 +45,7 @@ function formatStudent(student) {
         } else if (exam.exam_type === 'gemara') {
           formattedExam.details = {
             masechet: exam.masechet,
+            chapter_title: exam.chapter_title, // התוספת כאן
             from_page: exam.from_page,
             to_page: exam.to_page,
             gemara_pages: exam.gemara_pages
@@ -64,7 +63,6 @@ function formatStudent(student) {
           };
         }
 
-        // הוספת פרמטר התגמול אך ורק אם התלמיד עבר את המבחן בהצלחה
         if (isPassed && exam.reward !== undefined && exam.reward !== null) {
           formattedExam.reward = exam.reward;
         }
@@ -93,7 +91,6 @@ export default async function studentsHandler(request, env) {
   const queryStudentCode = url.searchParams.get('student_code');
   
   const studentCode = queryStudentCode || pathStudentCode;
-  
   const fullDetails = url.searchParams.get('full_details') === 'true';
   
   try {
