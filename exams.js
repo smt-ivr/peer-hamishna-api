@@ -13,17 +13,15 @@ function calculateNextCode(lastCode) {
 function formatExam(exam) {
   if (!exam) return exam;
   
-  // המבנה הראשי (המשותף לכל המבחנים)
   let formatted = {
     id: exam.id,
     exam_code: exam.exam_code,
     exam_type: exam.exam_type || 'unknown',
     target_grade: exam.target_grade,
-    reward_price: exam.reward_price || 0, // המחיר המחושב מהמסד
+    reward_price: exam.reward_price || 0, 
     is_deleted: exam.is_deleted === 1
   };
 
-  // אריזת הפרטים הספציפיים לפי סוג המבחן למניעת ערכי null
   if (exam.exam_type === 'mishnayot') {
     formatted.details = {
       masechet: exam.masechet,
@@ -35,12 +33,12 @@ function formatExam(exam) {
   } else if (exam.exam_type === 'gemara') {
     formatted.details = {
       masechet: exam.masechet,
+      chapter_title: exam.chapter_title, // התוספת כאן
       from_page: exam.from_page,
       to_page: exam.to_page,
       gemara_pages: exam.gemara_pages
     };
   } else {
-    // ברירת מחדל במידה וסוג המבחן טרם הוגדר
     formatted.details = {
       masechet: exam.masechet,
       chapter_num: exam.chapter_num,
@@ -63,10 +61,8 @@ export default async function examsHandler(request, env) {
   const pathParts = url.pathname.split('/');
   const examCode = pathParts[4] ? decodeURIComponent(pathParts[4]) : null; 
   
-  // -- הזנה מרוכזת של נתונים (Bulk Insert) --
   if (method === 'POST' && examCode === 'bulk') {
     const examsArray = await request.json();
-    
     const validExams = examsArray.filter(exam => exam && exam.exam_code);
     
     if (validExams.length === 0) {
@@ -98,7 +94,6 @@ export default async function examsHandler(request, env) {
     return new Response(JSON.stringify({ success: true, count: results.length }), { status: 201 });
   }
 
-  // 1. קבלת כל המבחנים הפעילים (כולל חישוב התגמול הכספי של כל מבחן)
   if (method === 'GET' && !examCode) {
     const query = `
       SELECT 
@@ -116,7 +111,6 @@ export default async function examsHandler(request, env) {
     return new Response(JSON.stringify(formattedResults), { status: 200 });
   }
   
-  // 2. יצירת מבחן בודד 
   if (method === 'POST' && !examCode) {
     const body = await request.json();
     const lastExam = await env.DB.prepare("SELECT exam_code FROM exams ORDER BY id DESC LIMIT 1").first();
@@ -136,7 +130,6 @@ export default async function examsHandler(request, env) {
     return new Response(JSON.stringify(formatExam(result)), { status: 201 });
   }
   
-  // 3. עדכון
   if (method === 'PUT' && examCode && examCode !== 'bulk') {
     const body = await request.json();
     const result = await env.DB.prepare(`
@@ -154,7 +147,6 @@ export default async function examsHandler(request, env) {
     return new Response(JSON.stringify(formatExam(result)), { status: 200 });
   }
   
-  // 4. מחיקה
   if (method === 'DELETE' && examCode && examCode !== 'bulk') {
     const result = await env.DB.prepare("UPDATE exams SET is_deleted = 1 WHERE exam_code = ?").bind(examCode).run();
     if (result.meta.changes === 0) return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 });
