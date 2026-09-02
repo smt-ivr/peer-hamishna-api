@@ -12,92 +12,112 @@ async function getNextStudentCode(env) {
   return (lastNum + 1).toString();
 }
 
-// פונקציית עזר להמרת נתונים לפורמט הנדרש (כולל פירוס מערך המבחנים)
+// פונקציית עזר להמרת נתונים לפורמט הנדרש (כולל פירוס מערך המבחנים והמרת בוליאנים)
 function formatStudent(student) {
   if (!student) return student;
   
-  let examsDetails = [];
-  try {
-    // השאילתה תחזיר מחרוזת JSON מ-SQLite, אז אנחנו ממירים אותה חזרה למערך
-    if (student.exams_details) {
-      examsDetails = JSON.parse(student.exams_details);
-    }
-  } catch (e) {
-    console.error("Error parsing exams details", e);
-  }
-
-  return {
+  let formattedStudent = {
     ...student,
     phones: student.phones ? (typeof student.phones === 'string' ? JSON.parse(student.phones) : student.phones) : [],
-    is_deleted: student.is_deleted === 1,
-    exams_details: examsDetails,
-    total_reward: student.total_reward || 0 // סך כל התגמול הכספי
+    is_deleted: student.is_deleted === 1
   };
+
+  // טיפול בשדות המורחבים במידה והם קיימים (כאשר full_details=true)
+  if (student.hasOwnProperty('exams_details')) {
+    try {
+      let examsArray = typeof student.exams_details === 'string' ? JSON.parse(student.exams_details) : student.exams_details;
+      
+      // המרת שדה passed מ-1/0 ל-true/false בכל מבחן
+      formattedStudent.exams_details = examsArray.map(exam => ({
+        ...exam,
+        passed: exam.passed === 1
+      }));
+    } catch (e) {
+      console.error("Error parsing exams details", e);
+      formattedStudent.exams_details = [];
+    }
+  }
+
+  // המרת סך התגמול למספר (או 0 אם ריק)
+  if (student.hasOwnProperty('total_reward')) {
+    formattedStudent.total_reward = student.total_reward || 0;
+  }
+
+  return formattedStudent;
 }
 
 export default async function studentsHandler(request, env) {
   const url = new URL(request.url);
   const method = request.method;
   
-  // תמיכה בשליפת קוד התלמיד מתוך פרמטר (Query Parameter) או מהנתיב לתאימות לאחור
   const pathParts = url.pathname.split('/');
   const pathStudentCode = pathParts[4] ? decodeURIComponent(pathParts[4]) : null; 
   const queryStudentCode = url.searchParams.get('student_code');
   
   const studentCode = queryStudentCode || pathStudentCode;
   
+  // פרמטר לקבלת נתונים מלאים (כולל מבחנים ותגמולים)
+  const fullDetails = url.searchParams.get('full_details') === 'true';
+  
   try {
-    // 1. קבלת כל התלמידים או תלמיד בודד (עם פירוט מלא של מבחנים ותגמול כספי)
+    // 1. קבלת התלמידים (עם או בלי פרטים מלאים בהתאם לפרמטר)
     if (method === 'GET') {
-      // שאילתת הבסיס שמאגדת את כל הנתונים, המבחנים והסכומים לקריאה אחת
-      const baseQuery = `
-        SELECT 
-          s.*,
-          COALESCE(
-            (
-              SELECT json_group_array(
-                json_object(
-                  'exam_code', e.exam_code,
-                  'masechet', e.masechet,
-                  'chapter_num', e.chapter_num,
-                  'chapter_name', e.chapter_name,
-                  'total_mishnayot', e.total_mishnayot,
-                  'gemara_pages', e.gemara_pages,
-                  'passed', se.passed,
-                  'reward', (
-                    IFNULL(e.total_mishnayot, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'mishnayot') +
-                    IFNULL(e.gemara_pages, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'gemara_pages')
+      let baseQuery = "";
+      
+      if (fullDetails) {
+        // שאילתה מורחבת הכוללת את פירוט המבחנים והתגמולים
+        baseQuery = `
+          SELECT 
+            s.*,
+            COALESCE(
+              (
+                SELECT json_group_array(
+                  json_object(
+                    'exam_code', e.exam_code,
+                    'masechet', e.masechet,
+                    'chapter_num', e.chapter_num,
+                    'chapter_name', e.chapter_name,
+                    'total_mishnayot', e.total_mishnayot,
+                    'gemara_pages', e.gemara_pages,
+                    'passed', se.passed,
+                    'reward', (
+                      IFNULL(e.total_mishnayot, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'mishnayot') +
+                      IFNULL(e.gemara_pages, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'gemara_pages')
+                    )
                   )
                 )
-              )
-              FROM student_exams se
-              JOIN exams e ON se.exam_code = e.exam_code
-              WHERE se.student_code = s.student_code AND se.passed = 1
-            ), '[]'
-          ) as exams_details,
-          COALESCE(
-            (
-              SELECT SUM(
-                IFNULL(e.total_mishnayot, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'mishnayot') +
-                IFNULL(e.gemara_pages, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'gemara_pages')
-              )
-              FROM student_exams se
-              JOIN exams e ON se.exam_code = e.exam_code
-              WHERE se.student_code = s.student_code AND se.passed = 1
-            ), 0
-          ) as total_reward
-        FROM students s
-        WHERE s.is_deleted = 0
-      `;
+                FROM student_exams se
+                JOIN exams e ON se.exam_code = e.exam_code
+                WHERE se.student_code = s.student_code AND se.passed = 1
+              ), '[]'
+            ) as exams_details,
+            COALESCE(
+              (
+                SELECT SUM(
+                  IFNULL(e.total_mishnayot, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'mishnayot') +
+                  IFNULL(e.gemara_pages, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'gemara_pages')
+                )
+                FROM student_exams se
+                JOIN exams e ON se.exam_code = e.exam_code
+                WHERE se.student_code = s.student_code AND se.passed = 1
+              ), 0
+            ) as total_reward
+          FROM students s
+          WHERE s.is_deleted = 0
+        `;
+      } else {
+        // שאילתה בסיסית ומהירה ללא חישובי תגמול
+        baseQuery = `SELECT * FROM students WHERE is_deleted = 0`;
+      }
 
       if (studentCode) {
-        // שליפת תלמיד ספציפי דרך הפרמטר (?student_code=1000)
-        const result = await env.DB.prepare(`${baseQuery} AND s.student_code = ?`).bind(studentCode).first();
+        // תלמיד ספציפי
+        const result = await env.DB.prepare(`${baseQuery} ${fullDetails ? 'AND' : 'AND'} s.student_code = ?`).bind(studentCode).first();
         
         if (!result) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
         return new Response(JSON.stringify(formatStudent(result)), { status: 200 });
       } else {
-        // שליפת כל התלמידים במכה אחת עם כל הנתונים המחושבים
+        // כל התלמידים, ממוינים לפי כיתה ושם
         const { results } = await env.DB.prepare(`${baseQuery} ORDER BY s.class_grade ASC, s.first_name ASC`).all();
         
         const formattedResults = results.map(formatStudent);
@@ -105,7 +125,7 @@ export default async function studentsHandler(request, env) {
       }
     }
     
-    // 2. יצירת תלמיד חדש (או רשימת תלמידים דרך POST /bulk)
+    // 2. יצירת תלמיד חדש 
     if (method === 'POST') {
       if (studentCode === 'bulk') {
         const studentsArray = await request.json();
