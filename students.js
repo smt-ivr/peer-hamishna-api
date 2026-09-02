@@ -44,7 +44,6 @@ function formatStudent(student) {
             total_mishnayot: exam.total_mishnayot
           };
         } else if (exam.exam_type === 'gemara') {
-          // הוספנו כאן את from_page ו-to_page כדי שיופיעו כל הפרטים בדיוק כמו במבחנים הכלליים
           formattedExam.details = {
             masechet: exam.masechet,
             from_page: exam.from_page,
@@ -208,4 +207,3 @@ export default async function studentsHandler(request, env) {
     return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   }
 }
-```[cite: 1]
