@@ -6,7 +6,7 @@ export async function handleYemotStudents(request, env) {
     
     // שלב 1: בקשת קוד תלמיד (אם הלקוח נכנס לראשונה)
     if (!studentCode) {
-        return new Response("read=t-ברוכים הבאים לאזור האישי. אנא הקישו את קוד התלמיד שלכם ולסיום סולמית=student_code,,,,,NO,,,,,,,,,no", { 
+        return new Response("read=t-ברוכים הבאים לאזור האישי אנא הקישו את קוד התלמיד שלכם ולסיום סולמית=student_code,,,,,NO,,,,,,,,,no", { 
             headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
         });
     }
@@ -14,13 +14,12 @@ export async function handleYemotStudents(request, env) {
     // שלב 2: אימות התלמיד במסד הנתונים
     const student = await env.DB.prepare("SELECT * FROM students WHERE student_code = ? AND is_deleted = 0").bind(studentCode).first();
     if (!student) {
-        return new Response("read=t-קוד תלמיד שגוי, אנא הקישו שוב ולסיום סולמית=student_code,,,,,NO,,,,,,,,,no", { 
+        return new Response("read=t-קוד תלמיד שגוי אנא הקישו שוב ולסיום סולמית=student_code,,,,,NO,,,,,,,,,no", { 
             headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
         });
     }
 
     // שלב 3: שליפת סיכום המבחנים והתגמולים
-    // אנו סופרים הכל: סך המבחנים, עבר (1), נכשל (לא 1), וסוכמים את התגמול רק על מה שעבר
     const query = `
         SELECT 
             COUNT(*) as total_exams,
@@ -45,23 +44,34 @@ export async function handleYemotStudents(request, env) {
         const totalExams = stats.total_exams || 0;
         const passedExams = stats.passed_exams || 0;
         const failedExams = stats.failed_exams || 0;
-        const reward = Number(stats.total_reward || 0).toString(); // פירמוט נקי למנוע מנוע ההקראה לומר אפסים מיותרים
+        
+        // הפרדת הסכום לשקלים ואגורות
+        const totalReward = Number(stats.total_reward || 0);
+        const shekels = Math.floor(totalReward);
+        const agorot = Math.round((totalReward - shekels) * 100);
 
-        // שלב 4: הרכבת משפט ההקראה
-        let message = `שלום ${student.first_name} ${student.last_name}. `;
+        // שלב 4: הרכבת משפט ההקראה (ללא נקודות כלל, ועם תחילית n- למספרים)
+        let message = `שלום ${student.first_name} ${student.last_name} `;
         
         if (totalExams === 0) {
-            message += "עדיין לא נבחנו באף מבחן.";
+            message += "עדיין לא נבחנו באף מבחן";
         } else {
-            message += `בסך הכל נבחנת ב ${totalExams} מבחנים. `;
-            message += `עברת בהצלחה ${passedExams} מבחנים. `;
+            message += `בסך הכל נבחנת ב n-${totalExams} מבחנים `;
+            message += `עברת בהצלחה n-${passedExams} מבחנים `;
+            
             if (failedExams > 0) {
-                message += `ולא עברת ${failedExams} מבחנים. `;
+                message += `ולא עברת n-${failedExams} מבחנים `;
             }
-            message += `הסכום שנצבר לזכותך הוא ${reward} שקלים. `;
+            
+            message += `הסכום שנצבר לזכותך הוא n-${shekels} שקלים `;
+            
+            // הוספת אגורות רק אם יש כאלו
+            if (agorot > 0) {
+                message += `ו n-${agorot} אגורות`;
+            }
         }
 
-        // החזרת תשובה נורמלית לימות המשיח ללא ניתוב תיקיות
+        // החזרת תשובה לימות המשיח ללא ניתוב תיקיות
         return new Response(`id_list_message=t-${message}`, { 
             headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
         });
