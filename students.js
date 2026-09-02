@@ -12,7 +12,7 @@ async function getNextStudentCode(env) {
   return (lastNum + 1).toString();
 }
 
-// פונקציית עזר להמרת נתונים לפורמט הנדרש (כולל עיצוב המבחנים לפי הלוגיקה החדשה)
+// פונקציית עזר להמרת נתונים לפורמט הנדרש
 function formatStudent(student) {
   if (!student) return student;
   
@@ -27,13 +27,13 @@ function formatStudent(student) {
     try {
       let examsArray = typeof student.exams_details === 'string' ? JSON.parse(student.exams_details) : student.exams_details;
       
-      // עיצוב מחדש של כל מבחן לפי הלוגיקה החדשה (מניעת null וחלוקה ל-details)
+      // עיצוב מחדש של כל מבחן (הצגת כל המבחנים שעשה, וצירוף פרמטר תגמול רק למי שעבר)
       formattedStudent.exams_details = examsArray.map(exam => {
+        let isPassed = exam.passed === 1;
         let formattedExam = {
           exam_code: exam.exam_code,
           exam_type: exam.exam_type || 'unknown',
-          passed: exam.passed === 1,
-          reward: exam.reward
+          passed: isPassed
         };
 
         if (exam.exam_type === 'mishnayot') {
@@ -49,7 +49,6 @@ function formatStudent(student) {
             gemara_pages: exam.gemara_pages
           };
         } else {
-          // ברירת מחדל
           formattedExam.details = {
             masechet: exam.masechet,
             chapter_num: exam.chapter_num,
@@ -58,6 +57,12 @@ function formatStudent(student) {
             gemara_pages: exam.gemara_pages
           };
         }
+
+        // הוספת פרמטר התגמול אך ורק אם התלמיד עבר את המבחן בהצלחה
+        if (isPassed && exam.reward !== undefined && exam.reward !== null) {
+          formattedExam.reward = exam.reward;
+        }
+
         return formattedExam;
       });
     } catch (e) {
@@ -90,7 +95,7 @@ export default async function studentsHandler(request, env) {
       let baseQuery = "";
       
       if (fullDetails || studentCode) {
-        // הוספנו כאן את e.exam_type לתוך ה-json_object כדי שנוכל למיין לפי הסוג
+        // שימו לב: בשאילתה הזו הסרנו את הסינון se.passed = 1 כדי לשלוף את כל המבחנים שהתלמיד ביצע
         baseQuery = `
           SELECT 
             s.*,
@@ -114,7 +119,7 @@ export default async function studentsHandler(request, env) {
                 )
                 FROM student_exams se
                 JOIN exams e ON se.exam_code = e.exam_code
-                WHERE se.student_code = s.student_code AND se.passed = 1
+                WHERE se.student_code = s.student_code
               ), '[]'
             ) as exams_details,
             COALESCE(
@@ -146,7 +151,6 @@ export default async function studentsHandler(request, env) {
       }
     }
     
-    // (שאר הפעולות POST, PUT, DELETE נשארו זהות לחלוטין)
     if (method === 'POST') {
       if (studentCode === 'bulk') {
         const studentsArray = await request.json();
