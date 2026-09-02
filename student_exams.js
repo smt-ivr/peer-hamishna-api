@@ -1,6 +1,6 @@
 import { getLocalTime } from './time.js'; // ייבוא הלוגיקה של השעון
 
-// פונקציית עזר להמרת נתונים בוליאניים (כדי שלא יחזור 0 או 1)
+// פונקציית עזר להמרת נתונים בוליאניים
 function formatStudentExam(exam) {
   if (!exam) return exam;
   return {
@@ -14,7 +14,6 @@ export default async function studentExamsHandler(request, env) {
   const method = request.method;
   
   const pathParts = url.pathname.split('/');
-  // חילוץ קוד תלמיד וקוד מבחן מהנתיב
   const studentCode = pathParts[4] ? decodeURIComponent(pathParts[4]) : null; 
   const examCode = pathParts[5] ? decodeURIComponent(pathParts[5]) : null; 
   
@@ -37,8 +36,6 @@ export default async function studentExamsHandler(request, env) {
     // -- הזנה מרוכזת של תוצאות לכלל המערכת (Bulk Insert) --
     if (method === 'POST' && studentCode === 'bulk') {
       const resultsArray = await request.json();
-      
-      // סינון נתונים תקינים 
       const validResults = resultsArray.filter(res => res && res.student_code && res.exam_code && res.passed !== undefined);
       
       if (validResults.length === 0) {
@@ -61,7 +58,7 @@ export default async function studentExamsHandler(request, env) {
       return new Response(JSON.stringify({ success: true, count: results.length }), { status: 201 });
     }
 
-    // 2. עדכון או הוספת תוצאות מבחנים לתלמיד ספציפי בקריאה אחת 
+    // 2. עדכון או הוספת תוצאות מבחנים לתלמיד ספציפי 
     if (method === 'POST' && !studentCode) {
       const body = await request.json();
       
@@ -72,29 +69,46 @@ export default async function studentExamsHandler(request, env) {
       const currentTime = getLocalTime(); 
       const results = { updated: [], skipped: [], errors: [] };
 
-      // שליפת המבחנים שכבר קיימים לתלמיד כדי להגן מפני דריסה
+      // שליפת המבחנים הקיימים במערכת כדי לוודא שהמבחן שמנסים לעדכן חוקי
+      const validExamsQuery = await env.DB.prepare(
+        "SELECT exam_code FROM exams WHERE is_deleted = 0"
+      ).all();
+      const validExamCodes = new Set(validExamsQuery.results.map(r => r.exam_code));
+
+      // שליפת המבחנים שכבר קיימים לתלמיד כדי להגן מפני דריסה (כולל הציון הנוכחי)
       const existingExamsQuery = await env.DB.prepare(
-        "SELECT exam_code FROM student_exams WHERE student_code = ?"
+        "SELECT exam_code, passed FROM student_exams WHERE student_code = ?"
       ).bind(body.student_code).all();
       
-      const existingExamCodes = new Set(existingExamsQuery.results.map(r => r.exam_code));
+      const existingExamsMap = new Map(existingExamsQuery.results.map(r => [r.exam_code, r.passed]));
       const stmts = [];
 
       for (const item of body.exams) {
         if (!item.exam_code || item.passed === undefined) {
-           results.errors.push({ exam_code: item.exam_code || 'unknown', reason: 'Missing required fields' });
+           results.errors.push({ exam_code: item.exam_code || 'לא ידוע', reason: 'שדות חובה חסרים' });
            continue;
         }
 
-        const isExisting = existingExamCodes.has(item.exam_code);
+        // חסימת מבחנים שלא מוגדרים במסד
+        if (!validExamCodes.has(item.exam_code)) {
+            results.errors.push({ exam_code: item.exam_code, reason: 'מבחן לא קיים במערכת' });
+            continue;
+        }
 
-        // מנגנון ההגנה: אם המבחן כבר קיים במסד ולא הועבר force_update: true נדלג עליו
+        const isExisting = existingExamsMap.has(item.exam_code);
+
+        // מנגנון ההגנה מפני דריסה (עם תגובה נורמלית)
         if (isExisting && !item.force_update) {
-          results.skipped.push({ exam_code: item.exam_code, reason: 'Record exists. Use force_update: true to overwrite.' });
+          const currentStatus = existingExamsMap.get(item.exam_code) === 1 ? 'עבר' : 'לא עבר';
+          results.skipped.push({ 
+            exam_code: item.exam_code, 
+            reason: `ציון כבר מעודכן במערכת כ-${currentStatus}` 
+          });
           continue;
         }
 
         const passedValue = item.passed ? 1 : 0;
+        const statusText = item.passed ? 'עבר' : 'לא עבר';
         
         stmts.push(
           env.DB.prepare(`
@@ -104,7 +118,11 @@ export default async function studentExamsHandler(request, env) {
             DO UPDATE SET passed = excluded.passed, updated_at = ?
           `).bind(body.student_code, item.exam_code, passedValue, currentTime, currentTime)
         );
-        results.updated.push(item.exam_code);
+        
+        results.updated.push({
+            exam_code: item.exam_code,
+            status: `עודכן בהצלחה: ${statusText}`
+        });
       }
       
       if (stmts.length > 0) {
