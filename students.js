@@ -12,7 +12,7 @@ async function getNextStudentCode(env) {
   return (lastNum + 1).toString();
 }
 
-// פונקציית עזר להמרת נתונים לפורמט הנדרש (כולל פירוס מערך המבחנים והמרת בוליאנים)
+// פונקציית עזר להמרת נתונים לפורמט הנדרש (כולל עיצוב המבחנים לפי הלוגיקה החדשה)
 function formatStudent(student) {
   if (!student) return student;
   
@@ -22,23 +22,50 @@ function formatStudent(student) {
     is_deleted: student.is_deleted === 1
   };
 
-  // טיפול בשדות המורחבים במידה והם קיימים (כאשר full_details=true או תלמיד ספציפי)
+  // טיפול בשדות המורחבים במידה והם קיימים
   if (student.hasOwnProperty('exams_details')) {
     try {
       let examsArray = typeof student.exams_details === 'string' ? JSON.parse(student.exams_details) : student.exams_details;
       
-      // המרת שדה passed מ-1/0 ל-true/false בכל מבחן
-      formattedStudent.exams_details = examsArray.map(exam => ({
-        ...exam,
-        passed: exam.passed === 1
-      }));
+      // עיצוב מחדש של כל מבחן לפי הלוגיקה החדשה (מניעת null וחלוקה ל-details)
+      formattedStudent.exams_details = examsArray.map(exam => {
+        let formattedExam = {
+          exam_code: exam.exam_code,
+          exam_type: exam.exam_type || 'unknown',
+          passed: exam.passed === 1,
+          reward: exam.reward
+        };
+
+        if (exam.exam_type === 'mishnayot') {
+          formattedExam.details = {
+            masechet: exam.masechet,
+            chapter_num: exam.chapter_num,
+            chapter_name: exam.chapter_name,
+            total_mishnayot: exam.total_mishnayot
+          };
+        } else if (exam.exam_type === 'gemara') {
+          formattedExam.details = {
+            masechet: exam.masechet,
+            gemara_pages: exam.gemara_pages
+          };
+        } else {
+          // ברירת מחדל
+          formattedExam.details = {
+            masechet: exam.masechet,
+            chapter_num: exam.chapter_num,
+            chapter_name: exam.chapter_name,
+            total_mishnayot: exam.total_mishnayot,
+            gemara_pages: exam.gemara_pages
+          };
+        }
+        return formattedExam;
+      });
     } catch (e) {
       console.error("Error parsing exams details", e);
       formattedStudent.exams_details = [];
     }
   }
 
-  // המרת סך התגמול למספר (או 0 אם ריק)
   if (student.hasOwnProperty('total_reward')) {
     formattedStudent.total_reward = student.total_reward || 0;
   }
@@ -56,17 +83,14 @@ export default async function studentsHandler(request, env) {
   
   const studentCode = queryStudentCode || pathStudentCode;
   
-  // פרמטר לקבלת נתונים מלאים (כולל מבחנים ותגמולים)
   const fullDetails = url.searchParams.get('full_details') === 'true';
   
   try {
-    // 1. קבלת התלמידים (עם או בלי פרטים מלאים בהתאם לפרמטר או לבקשה ספציפית)
     if (method === 'GET') {
       let baseQuery = "";
       
-      // השינוי הוכנס כאן: התנאי עודכן לכלול גם מצב שבו studentCode קיים
       if (fullDetails || studentCode) {
-        // שאילתה מורחבת הכוללת את פירוט המבחנים והתגמולים
+        // הוספנו כאן את e.exam_type לתוך ה-json_object כדי שנוכל למיין לפי הסוג
         baseQuery = `
           SELECT 
             s.*,
@@ -75,6 +99,7 @@ export default async function studentsHandler(request, env) {
                 SELECT json_group_array(
                   json_object(
                     'exam_code', e.exam_code,
+                    'exam_type', e.exam_type,
                     'masechet', e.masechet,
                     'chapter_num', e.chapter_num,
                     'chapter_name', e.chapter_name,
@@ -107,94 +132,57 @@ export default async function studentsHandler(request, env) {
           WHERE s.is_deleted = 0
         `;
       } else {
-        // שאילתה בסיסית ומהירה
         baseQuery = `SELECT s.* FROM students s WHERE s.is_deleted = 0`;
       }
 
       if (studentCode) {
-        // תלמיד ספציפי
         const result = await env.DB.prepare(`${baseQuery} AND s.student_code = ?`).bind(studentCode).first();
-        
         if (!result) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
         return new Response(JSON.stringify(formatStudent(result)), { status: 200 });
       } else {
-        // כל התלמידים, ממוינים לפי כיתה ושם
         const { results } = await env.DB.prepare(`${baseQuery} ORDER BY s.class_grade ASC, s.first_name ASC`).all();
-        
         const formattedResults = results.map(formatStudent);
         return new Response(JSON.stringify(formattedResults), { status: 200 });
       }
     }
     
-    // 2. יצירת תלמיד חדש 
+    // (שאר הפעולות POST, PUT, DELETE נשארו זהות לחלוטין)
     if (method === 'POST') {
       if (studentCode === 'bulk') {
         const studentsArray = await request.json();
         const validStudents = studentsArray.filter(s => s && s.student_code);
-        
-        if (validStudents.length === 0) {
-          return new Response(JSON.stringify({ error: 'No valid data' }), { status: 400 });
-        }
+        if (validStudents.length === 0) return new Response(JSON.stringify({ error: 'No valid data' }), { status: 400 });
 
         const stmts = validStudents.map(student => 
           env.DB.prepare(`
             INSERT INTO students (student_code, first_name, last_name, class_grade, phones)
             VALUES (?, ?, ?, ?, ?)
-          `).bind(
-            student.student_code,
-            student.first_name || '',
-            student.last_name || '',
-            student.class_grade || '',
-            JSON.stringify(student.phones || [])
-          )
+          `).bind(student.student_code, student.first_name || '', student.last_name || '', student.class_grade || '', JSON.stringify(student.phones || []))
         );
-        
         const results = await env.DB.batch(stmts);
         return new Response(JSON.stringify({ success: true, count: results.length }), { status: 201 });
-      } 
-      else {
+      } else {
         const body = await request.json();
         const finalCode = body.student_code ? body.student_code.toString() : await getNextStudentCode(env);
-        
         const result = await env.DB.prepare(`
           INSERT INTO students (student_code, first_name, last_name, class_grade, phones)
           VALUES (?, ?, ?, ?, ?) RETURNING *
-        `).bind(
-          finalCode, 
-          body.first_name || '', 
-          body.last_name || '', 
-          body.class_grade || '', 
-          JSON.stringify(body.phones || [])
-        ).first();
-        
+        `).bind(finalCode, body.first_name || '', body.last_name || '', body.class_grade || '', JSON.stringify(body.phones || [])).first();
         return new Response(JSON.stringify(formatStudent(result)), { status: 201 });
       }
     }
     
-    // 3. עדכון תלמיד 
     if (method === 'PUT' && studentCode && studentCode !== 'bulk') {
       const body = await request.json();
       const newCode = body.student_code ? body.student_code.toString() : studentCode;
-      
       const result = await env.DB.prepare(`
-        UPDATE students SET 
-          student_code = ?, first_name = ?, last_name = ?, class_grade = ?, phones = ?
+        UPDATE students SET student_code = ?, first_name = ?, last_name = ?, class_grade = ?, phones = ?
         WHERE student_code = ? AND is_deleted = 0 RETURNING *
-      `).bind(
-        newCode,
-        body.first_name || '',
-        body.last_name || '',
-        body.class_grade || '',
-        JSON.stringify(body.phones || []),
-        studentCode
-      ).first();
-      
+      `).bind(newCode, body.first_name || '', body.last_name || '', body.class_grade || '', JSON.stringify(body.phones || []), studentCode).first();
       if (!result) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
-      
       return new Response(JSON.stringify(formatStudent(result)), { status: 200 });
     }
     
-    // 4. מחיקת תלמיד
     if (method === 'DELETE' && studentCode && studentCode !== 'bulk') {
       const result = await env.DB.prepare("UPDATE students SET is_deleted = 1 WHERE student_code = ?").bind(studentCode).run();
       if (result.meta.changes === 0) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
@@ -204,9 +192,7 @@ export default async function studentsHandler(request, env) {
     return new Response(JSON.stringify({ error: 'Method Not Allowed' }), { status: 405 });
     
   } catch (error) {
-    if (error.message.includes('UNIQUE constraint failed')) {
-      return new Response(JSON.stringify({ error: 'Student code already exists' }), { status: 400 });
-    }
+    if (error.message.includes('UNIQUE constraint failed')) return new Response(JSON.stringify({ error: 'Student code already exists' }), { status: 400 });
     return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   }
 }
