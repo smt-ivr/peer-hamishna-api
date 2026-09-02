@@ -50,29 +50,39 @@ export async function handleYemotStudents(request, env) {
         const shekels = Math.floor(totalReward);
         const agorot = Math.round((totalReward - shekels) * 100);
 
-        // שלב 4: הרכבת משפט ההקראה (ללא נקודות כלל, ועם תחילית n- למספרים)
-        let message = `שלום ${student.first_name} ${student.last_name} `;
+        // שלב 4: בניית שרשור הפקודות באמצעות מערך (כדי לשים את הנקודות רק בין הפקודות)
+        let messageParts = [];
+        let intro = `t-שלום ${student.first_name} ${student.last_name}`;
         
         if (totalExams === 0) {
-            message += "עדיין לא נבחנו באף מבחן";
+            messageParts.push(`${intro} עדיין לא נבחנו באף מבחן`);
         } else {
-            message += `בסך הכל נבחנת ב n-${totalExams} מבחנים `;
-            message += `עברת בהצלחה n-${passedExams} מבחנים `;
+            messageParts.push(`${intro} בסך הכל נבחנת ב`);
+            messageParts.push(`n-${totalExams}`); // מספר המבחנים
+            messageParts.push(`t-מבחנים עברת בהצלחה`);
+            messageParts.push(`n-${passedExams}`); // מבחנים שעבר
             
             if (failedExams > 0) {
-                message += `ולא עברת n-${failedExams} מבחנים `;
+                messageParts.push(`t-מבחנים ולא עברת`);
+                messageParts.push(`n-${failedExams}`); // מבחנים שנכשל
             }
             
-            message += `הסכום שנצבר לזכותך הוא n-${shekels} שקלים `;
+            messageParts.push(`t-מבחנים הסכום שנצבר לזכותך הוא`);
+            messageParts.push(`n-${shekels}`); // סכום שקלים
             
-            // הוספת אגורות רק אם יש כאלו
             if (agorot > 0) {
-                message += `ו n-${agorot} אגורות`;
+                messageParts.push(`t-שקלים ו`);
+                messageParts.push(`n-${agorot}`); // אגורות
+                messageParts.push(`t-אגורות`);
+            } else {
+                messageParts.push(`t-שקלים`);
             }
         }
 
-        // החזרת תשובה לימות המשיח ללא ניתוב תיקיות
-        return new Response(`id_list_message=t-${message}`, { 
+        // חיבור כל חלקי המערך בעזרת נקודה (זה יוצר את השרשור המדויק לימות המשיח)
+        const finalMessage = messageParts.join('.');
+
+        return new Response(`id_list_message=${finalMessage}`, { 
             headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
         });
         
