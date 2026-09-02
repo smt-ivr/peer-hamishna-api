@@ -22,7 +22,7 @@ function formatStudent(student) {
     is_deleted: student.is_deleted === 1
   };
 
-  // טיפול בשדות המורחבים במידה והם קיימים (כאשר full_details=true)
+  // טיפול בשדות המורחבים במידה והם קיימים (כאשר full_details=true או תלמיד ספציפי)
   if (student.hasOwnProperty('exams_details')) {
     try {
       let examsArray = typeof student.exams_details === 'string' ? JSON.parse(student.exams_details) : student.exams_details;
@@ -60,11 +60,12 @@ export default async function studentsHandler(request, env) {
   const fullDetails = url.searchParams.get('full_details') === 'true';
   
   try {
-    // 1. קבלת התלמידים (עם או בלי פרטים מלאים בהתאם לפרמטר)
+    // 1. קבלת התלמידים (עם או בלי פרטים מלאים בהתאם לפרמטר או לבקשה ספציפית)
     if (method === 'GET') {
       let baseQuery = "";
       
-      if (fullDetails) {
+      // השינוי הוכנס כאן: התנאי עודכן לכלול גם מצב שבו studentCode קיים
+      if (fullDetails || studentCode) {
         // שאילתה מורחבת הכוללת את פירוט המבחנים והתגמולים
         baseQuery = `
           SELECT 
@@ -106,7 +107,7 @@ export default async function studentsHandler(request, env) {
           WHERE s.is_deleted = 0
         `;
       } else {
-        // שאילתה בסיסית ומהירה - כאן תוקן הבאג עם הוספת s.* ו-s
+        // שאילתה בסיסית ומהירה
         baseQuery = `SELECT s.* FROM students s WHERE s.is_deleted = 0`;
       }
 
