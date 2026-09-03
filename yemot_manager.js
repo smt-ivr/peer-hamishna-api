@@ -1,5 +1,21 @@
 import { getLocalTime } from './time.js';
 
+// פונקציית עזר לחישוב והשוואת כיתות
+function getGradeValue(gradeStr) {
+  if (!gradeStr) return 0;
+  // ניקוי המילה "כיתה" וגרשיים כדי להשאיר רק את האות
+  const cleanGrade = String(gradeStr).replace(/כיתה/g, '').replace(/['"']/g, '').trim();
+  
+  const gradesMap = {
+    'א': 1, 'ב': 2, 'ג': 3, 'ד': 4, 'ה': 5, 'ו': 6,
+    'ז': 7, 'ח': 8, 'ט': 9, 'י': 10, 'יא': 11, 'יב': 12
+  };
+  
+  const num = parseInt(cleanGrade, 10);
+  if (!isNaN(num)) return num; // במקרה שהכיתה הוזנה כמספר
+  return gradesMap[cleanGrade] || 0;
+}
+
 export async function handleYemotManager(request, env) {
     const url = new URL(request.url);
     
@@ -7,7 +23,15 @@ export async function handleYemotManager(request, env) {
     const studentCode = url.searchParams.get('student_code');
     const examInput = url.searchParams.get('exam_input');
     const passInput = url.searchParams.get('pass_input');
+    const apiPhone = url.searchParams.get('ApiPhone'); // קליטת מספר הטלפון מימות המשיח
     
+    // חסימה אם אין זיהוי טלפון
+    if (!apiPhone) {
+        return new Response("read=t-שגיאה, לא ניתן לעדכן מבחן ללא זיהוי מספר הטלפון המעדכן=error,,,,,NO,,,,,,,,,no", { 
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
+        });
+    }
+
     // שלב 1: בקשת קוד תלמיד (אם טרם הוקלד)
     if (!studentCode) {
         return new Response("read=t-ברוכים הבאים למערכת עדכון המבחנים, אנא הקישו קוד תלמיד וסולמית=student_code,,,,,NO,,,,,,,,,no", { 
@@ -51,6 +75,18 @@ export async function handleYemotManager(request, env) {
             });
         }
 
+        // אכיפת כיתת יעד מול כיתת התלמיד
+        if (exam.target_grade && student.class_grade) {
+            const studentGradeVal = getGradeValue(student.class_grade);
+            const targetGradeVal = getGradeValue(exam.target_grade);
+            
+            if (studentGradeVal > 0 && targetGradeVal > 0 && studentGradeVal < targetGradeVal) {
+                return new Response(`id_list_message=t-שגיאה, המבחן מיועד לכיתה ${exam.target_grade} ומעלה. תלמיד זה אינו מורשה להיבחן בו.&go_to_folder=/`, { 
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
+                });
+            }
+        }
+
         // מניעת דריסה: בדיקה אם לתלמיד כבר יש תוצאה למבחן זה
         const existingResult = await env.DB.prepare("SELECT * FROM student_exams WHERE student_code = ? AND exam_code = ?").bind(studentCode, examCode).first();
         if (existingResult) {
@@ -72,15 +108,15 @@ export async function handleYemotManager(request, env) {
         });
     }
 
-    // שלב 4: שמירת הנתונים במסד
+    // שלב 4: שמירת הנתונים במסד עם ציון מקור העדכון
     try {
         const passedValue = passInput === '1' ? 1 : 2;
         const currentTime = getLocalTime(); 
 
         await env.DB.prepare(`
-            INSERT INTO student_exams (student_code, exam_code, passed, updated_at)
-            VALUES (?, ?, ?, ?)
-        `).bind(studentCode, examCode, passedValue, currentTime).run();
+            INSERT INTO student_exams (student_code, exam_code, passed, updated_at, update_source, source_identifier)
+            VALUES (?, ?, ?, ?, 'phone', ?)
+        `).bind(studentCode, examCode, passedValue, currentTime, apiPhone).run();
 
         return new Response(`id_list_message=t-הציון למבחן ${examCode} עבור התלמיד ${student.first_name} ${student.last_name} עודכן בהצלחה&go_to_folder=/`, { 
             headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
