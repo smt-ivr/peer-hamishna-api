@@ -1,5 +1,21 @@
 import { getLocalTime } from './time.js'; // ייבוא הלוגיקה של השעון
 
+// פונקציית עזר לחישוב והשוואת כיתות
+function getGradeValue(gradeStr) {
+  if (!gradeStr) return 0;
+  // ניקוי המילה "כיתה" וגרשיים כדי להשאיר רק את האות
+  const cleanGrade = String(gradeStr).replace(/כיתה/g, '').replace(/['"']/g, '').trim();
+  
+  const gradesMap = {
+    'א': 1, 'ב': 2, 'ג': 3, 'ד': 4, 'ה': 5, 'ו': 6,
+    'ז': 7, 'ח': 8, 'ט': 9, 'י': 10, 'יא': 11, 'יב': 12
+  };
+  
+  const num = parseInt(cleanGrade, 10);
+  if (!isNaN(num)) return num; // במקרה שהכיתה הוזנה כמספר
+  return gradesMap[cleanGrade] || 0;
+}
+
 // פונקציית עזר להמרת נתונים בוליאניים
 function formatStudentExam(exam) {
   if (!exam) return exam;
@@ -16,6 +32,9 @@ export default async function studentExamsHandler(request, env) {
   const pathParts = url.pathname.split('/');
   const studentCode = pathParts[4] ? decodeURIComponent(pathParts[4]) : null; 
   const examCode = pathParts[5] ? decodeURIComponent(pathParts[5]) : null; 
+  
+  // קליטת ה-IP של המשתמש מתוך ה-Headers של קלאודפלייר
+  const clientIp = request.headers.get('cf-connecting-ip') || 'unknown';
   
   try {
     // 1. קבלת התוצאות
@@ -47,11 +66,11 @@ export default async function studentExamsHandler(request, env) {
       const stmts = validResults.map(item => {
         const passedValue = item.passed ? 1 : 0;
         return env.DB.prepare(`
-          INSERT INTO student_exams (student_code, exam_code, passed, updated_at)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO student_exams (student_code, exam_code, passed, updated_at, update_source, source_identifier)
+          VALUES (?, ?, ?, ?, 'web-bulk', ?)
           ON CONFLICT(student_code, exam_code) 
-          DO UPDATE SET passed = excluded.passed, updated_at = ?
-        `).bind(item.student_code, item.exam_code, passedValue, currentTime, currentTime);
+          DO UPDATE SET passed = excluded.passed, updated_at = ?, update_source = 'web-bulk', source_identifier = ?
+        `).bind(item.student_code, item.exam_code, passedValue, currentTime, clientIp, currentTime, clientIp);
       });
       
       const results = await env.DB.batch(stmts);
@@ -69,11 +88,17 @@ export default async function studentExamsHandler(request, env) {
       const currentTime = getLocalTime(); 
       const results = { updated: [], skipped: [], errors: [] };
 
-      // שליפת המבחנים הקיימים במערכת כדי לוודא שהמבחן שמנסים לעדכן חוקי
+      // משיכת התלמיד כדי לקבל את רמת הכיתה שלו
+      const student = await env.DB.prepare("SELECT class_grade FROM students WHERE student_code = ? AND is_deleted = 0").bind(body.student_code).first();
+      if (!student) {
+          return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
+      }
+
+      // שליפת המבחנים הקיימים במערכת כולל כיתת יעד
       const validExamsQuery = await env.DB.prepare(
-        "SELECT exam_code FROM exams WHERE is_deleted = 0"
+        "SELECT exam_code, target_grade FROM exams WHERE is_deleted = 0"
       ).all();
-      const validExamCodes = new Set(validExamsQuery.results.map(r => r.exam_code));
+      const validExamCodes = new Map(validExamsQuery.results.map(r => [r.exam_code, r]));
 
       // שליפת המבחנים שכבר קיימים לתלמיד כדי להגן מפני דריסה (כולל הציון הנוכחי)
       const existingExamsQuery = await env.DB.prepare(
@@ -90,9 +115,21 @@ export default async function studentExamsHandler(request, env) {
         }
 
         // חסימת מבחנים שלא מוגדרים במסד
-        if (!validExamCodes.has(item.exam_code)) {
+        const examData = validExamCodes.get(item.exam_code);
+        if (!examData) {
             results.errors.push({ exam_code: item.exam_code, reason: 'מבחן לא קיים במערכת' });
             continue;
+        }
+
+        // --- אכיפת כיתת יעד מול כיתת התלמיד ---
+        if (examData.target_grade && student.class_grade) {
+            const studentGradeVal = getGradeValue(student.class_grade);
+            const targetGradeVal = getGradeValue(examData.target_grade);
+            
+            if (studentGradeVal > 0 && targetGradeVal > 0 && studentGradeVal < targetGradeVal) {
+                results.errors.push({ exam_code: item.exam_code, reason: `מבחן זה מיועד לכיתה ${examData.target_grade} ומעלה` });
+                continue;
+            }
         }
 
         const isExisting = existingExamsMap.has(item.exam_code);
@@ -112,11 +149,11 @@ export default async function studentExamsHandler(request, env) {
         
         stmts.push(
           env.DB.prepare(`
-            INSERT INTO student_exams (student_code, exam_code, passed, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO student_exams (student_code, exam_code, passed, updated_at, update_source, source_identifier)
+            VALUES (?, ?, ?, ?, 'web', ?)
             ON CONFLICT(student_code, exam_code) 
-            DO UPDATE SET passed = excluded.passed, updated_at = ?
-          `).bind(body.student_code, item.exam_code, passedValue, currentTime, currentTime)
+            DO UPDATE SET passed = excluded.passed, updated_at = ?, update_source = 'web', source_identifier = ?
+          `).bind(body.student_code, item.exam_code, passedValue, currentTime, clientIp, currentTime, clientIp)
         );
         
         results.updated.push({
