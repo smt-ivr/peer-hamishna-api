@@ -45,7 +45,7 @@ function formatStudent(student) {
         } else if (exam.exam_type === 'gemara') {
           formattedExam.details = {
             masechet: exam.masechet,
-            chapter_title: exam.chapter_title, // התוספת כאן
+            chapter_title: exam.chapter_title, 
             from_page: exam.from_page,
             to_page: exam.to_page,
             gemara_pages: exam.gemara_pages
@@ -88,8 +88,9 @@ export default async function studentsHandler(request, env) {
   
   const pathParts = url.pathname.split('/');
   const pathStudentCode = pathParts[4] ? decodeURIComponent(pathParts[4]) : null; 
-  const queryStudentCode = url.searchParams.get('student_code');
+  const subAction = pathParts[5] ? decodeURIComponent(pathParts[5]) : null; // זיהוי נתיב משנה (כמו change-code)
   
+  const queryStudentCode = url.searchParams.get('student_code');
   const studentCode = queryStudentCode || pathStudentCode;
   const fullDetails = url.searchParams.get('full_details') === 'true';
   
@@ -181,15 +182,52 @@ export default async function studentsHandler(request, env) {
       }
     }
     
-    if (method === 'PUT' && studentCode && studentCode !== 'bulk') {
+    // נתיב 1: עדכון פרטי תלמיד רגיל (ללא אפשרות שינוי קוד התלמיד)
+    if (method === 'PUT' && studentCode && studentCode !== 'bulk' && !subAction) {
       const body = await request.json();
-      const newCode = body.student_code ? body.student_code.toString() : studentCode;
+      
       const result = await env.DB.prepare(`
-        UPDATE students SET student_code = ?, first_name = ?, last_name = ?, class_grade = ?, phones = ?
+        UPDATE students SET first_name = ?, last_name = ?, class_grade = ?, phones = ?
         WHERE student_code = ? AND is_deleted = 0 RETURNING *
-      `).bind(newCode, body.first_name || '', body.last_name || '', body.class_grade || '', JSON.stringify(body.phones || []), studentCode).first();
+      `).bind(body.first_name || '', body.last_name || '', body.class_grade || '', JSON.stringify(body.phones || []), studentCode).first();
+      
       if (!result) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
       return new Response(JSON.stringify(formatStudent(result)), { status: 200 });
+    }
+
+    // נתיב 2: שינוי קוד תלמיד בלבד (חכם ומשפיע על כל המקומות)
+    if (method === 'PUT' && studentCode && subAction === 'change-code') {
+      const body = await request.json();
+      const newCode = body.new_student_code ? body.new_student_code.toString() : null;
+
+      if (!newCode) {
+        return new Response(JSON.stringify({ error: 'new_student_code is required' }), { status: 400 });
+      }
+
+      if (newCode === studentCode) {
+        return new Response(JSON.stringify({ error: 'New code is the same as the old code' }), { status: 400 });
+      }
+
+      // מוודאים שהקוד החדש לא תפוס כבר על ידי תלמיד אחר
+      const existing = await env.DB.prepare("SELECT student_code FROM students WHERE student_code = ? AND is_deleted = 0").bind(newCode).first();
+      if (existing) {
+        return new Response(JSON.stringify({ error: 'Student code already exists' }), { status: 409 });
+      }
+
+      // מעדכנים גם את טבלת התלמידים וגם את תוצאות המבחנים באותה פעימה
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE students SET student_code = ? WHERE student_code = ? AND is_deleted = 0`).bind(newCode, studentCode),
+        env.DB.prepare(`UPDATE student_exams SET student_code = ? WHERE student_code = ?`).bind(newCode, studentCode)
+      ]);
+
+      const result = await env.DB.prepare("SELECT * FROM students WHERE student_code = ?").bind(newCode).first();
+      if (!result) return new Response(JSON.stringify({ error: 'Update failed or student not found' }), { status: 404 });
+      
+      return new Response(JSON.stringify({ 
+        success: true, 
+        message: 'Student code updated successfully across all records', 
+        student: formatStudent(result) 
+      }), { status: 200 });
     }
     
     if (method === 'DELETE' && studentCode && studentCode !== 'bulk') {
