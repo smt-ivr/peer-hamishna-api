@@ -4,7 +4,7 @@ import studentExamsHandler from './student_exams.js';
 import { handleYemotManager } from './yemot_manager.js';
 import { handleYemotStudents } from './yemot_students.js';
 
-const API_VERSION = "1.3.1";
+const API_VERSION = "1.4.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -28,20 +28,25 @@ export default {
     try {
       // -- נתיב פתוח לבדיקת סטטוס הרשאות --
       if (path === '/peer/api/auth-check') {
-        const ipRecord = await env.DB.prepare("SELECT 1 FROM auth_rules WHERE rule_type = 'ip' AND rule_value = ?").bind(clientIp).first();
+        const ipRecord = await env.DB.prepare("SELECT access_level FROM auth_rules WHERE rule_type = 'ip' AND rule_value = ?").bind(clientIp).first();
         const isIpAllowed = !!ipRecord;
         
         let isKeyValid = false;
+        let keyAccessLevel = null;
         if (apiKey) {
-            const keyRecord = await env.DB.prepare("SELECT 1 FROM auth_rules WHERE rule_type = 'password' AND rule_value = ?").bind(apiKey).first();
+            const keyRecord = await env.DB.prepare("SELECT access_level FROM auth_rules WHERE rule_type = 'password' AND rule_value = ?").bind(apiKey).first();
             isKeyValid = !!keyRecord;
+            if (keyRecord) keyAccessLevel = keyRecord.access_level;
         }
         
+        const finalAccessLevel = isKeyValid ? keyAccessLevel : (isIpAllowed ? ipRecord.access_level : null);
+
         return new Response(JSON.stringify({
           client_ip: clientIp,
           is_ip_allowed: isIpAllowed,
           is_key_valid: isKeyValid,
-          is_authorized: isIpAllowed || isKeyValid
+          is_authorized: isIpAllowed || isKeyValid,
+          access_level: finalAccessLevel
         }), { 
           status: 200, 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
@@ -53,30 +58,45 @@ export default {
       
       if (!isYemotPath && path !== '/peer/api' && path !== '/peer/api/') {
          let isAuthorized = false;
+         let accessLevel = null;
          
          // 1. בדיקה אם סופקה סיסמה והאם היא קיימת בטבלה
          if (apiKey) {
-             const keyRecord = await env.DB.prepare("SELECT 1 FROM auth_rules WHERE rule_type = 'password' AND rule_value = ?").bind(apiKey).first();
+             const keyRecord = await env.DB.prepare("SELECT access_level FROM auth_rules WHERE rule_type = 'password' AND rule_value = ?").bind(apiKey).first();
              if (keyRecord) {
                  isAuthorized = true;
+                 accessLevel = keyRecord.access_level;
              }
          }
 
          // 2. אם לא אושר דרך סיסמה, נבדוק את ה-IP
          if (!isAuthorized) {
-             const ipRecord = await env.DB.prepare("SELECT 1 FROM auth_rules WHERE rule_type = 'ip' AND rule_value = ?").bind(clientIp).first();
+             const ipRecord = await env.DB.prepare("SELECT access_level FROM auth_rules WHERE rule_type = 'ip' AND rule_value = ?").bind(clientIp).first();
              if (ipRecord) {
                  isAuthorized = true;
+                 accessLevel = ipRecord.access_level;
              }
          }
 
-         // דחיית הבקשה אם אין הרשאה (לא IP ולא סיסמה)
+         // 3. דחיית הבקשה אם אין הרשאה (לא IP ולא סיסמה)
          if (!isAuthorized) {
              return new Response(JSON.stringify({ 
                  error: 'Unauthorized Access',
                  message: 'Invalid IP address or missing/incorrect API key.'
              }), { 
                  status: 401, 
+                 headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+             });
+         }
+
+         // 4. אכיפת הרשאות כתיבה למשתמשי צפייה בלבד (read_only)
+         const isWriteMethod = ['POST', 'PUT', 'DELETE'].includes(request.method);
+         if (accessLevel === 'read_only' && isWriteMethod) {
+             return new Response(JSON.stringify({ 
+                 error: 'Forbidden',
+                 message: 'Your access level (read_only) does not permit modifying data.'
+             }), { 
+                 status: 403, 
                  headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
              });
          }
