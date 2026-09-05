@@ -1,15 +1,15 @@
 import examsHandler from './exams.js';
 import studentsHandler from './students.js';
 import studentExamsHandler from './student_exams.js';
-import { handleYemotManager } from './yemot_manager.js'; // ייבוא מודול ימות המנהלים
-import { handleYemotStudents } from './yemot_students.js'; // ייבוא מודול ימות התלמידים
+import { handleYemotManager } from './yemot_manager.js';
+import { handleYemotStudents } from './yemot_students.js';
 
-const API_VERSION = "1.3.0";
+const API_VERSION = "1.3.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, x-api-key', 
 };
 
 export default {
@@ -20,15 +20,76 @@ export default {
 
     const url = new URL(request.url);
     const path = url.pathname;
+    
+    // קליטת ה-IP של המשתמש והסיסמה (אם סופקה)
+    const clientIp = request.headers.get('cf-connecting-ip') || 'unknown';
+    const apiKey = request.headers.get('x-api-key') || url.searchParams.get('api_key');
 
     try {
+      // -- נתיב פתוח לבדיקת סטטוס הרשאות --
+      if (path === '/peer/api/auth-check') {
+        const ipRecord = await env.DB.prepare("SELECT 1 FROM auth_rules WHERE rule_type = 'ip' AND rule_value = ?").bind(clientIp).first();
+        const isIpAllowed = !!ipRecord;
+        
+        let isKeyValid = false;
+        if (apiKey) {
+            const keyRecord = await env.DB.prepare("SELECT 1 FROM auth_rules WHERE rule_type = 'password' AND rule_value = ?").bind(apiKey).first();
+            isKeyValid = !!keyRecord;
+        }
+        
+        return new Response(JSON.stringify({
+          client_ip: clientIp,
+          is_ip_allowed: isIpAllowed,
+          is_key_valid: isKeyValid,
+          is_authorized: isIpAllowed || isKeyValid
+        }), { 
+          status: 200, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+
+      // -- מנגנון אבטחה מול מסד הנתונים --
+      const isYemotPath = path.startsWith('/peer/api/yemot/');
+      
+      if (!isYemotPath && path !== '/peer/api' && path !== '/peer/api/') {
+         let isAuthorized = false;
+         
+         // 1. בדיקה אם סופקה סיסמה והאם היא קיימת בטבלה
+         if (apiKey) {
+             const keyRecord = await env.DB.prepare("SELECT 1 FROM auth_rules WHERE rule_type = 'password' AND rule_value = ?").bind(apiKey).first();
+             if (keyRecord) {
+                 isAuthorized = true;
+             }
+         }
+
+         // 2. אם לא אושר דרך סיסמה, נבדוק את ה-IP
+         if (!isAuthorized) {
+             const ipRecord = await env.DB.prepare("SELECT 1 FROM auth_rules WHERE rule_type = 'ip' AND rule_value = ?").bind(clientIp).first();
+             if (ipRecord) {
+                 isAuthorized = true;
+             }
+         }
+
+         // דחיית הבקשה אם אין הרשאה (לא IP ולא סיסמה)
+         if (!isAuthorized) {
+             return new Response(JSON.stringify({ 
+                 error: 'Unauthorized Access',
+                 message: 'Invalid IP address or missing/incorrect API key.'
+             }), { 
+                 status: 401, 
+                 headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+             });
+         }
+      }
+
+      // -- הניתוב המקורי של המערכת --
       let response;
       
       if (path === '/peer/api' || path === '/peer/api/') {
         response = new Response(JSON.stringify({ 
           status: "ready", 
           version: API_VERSION,
-          message: "API is up and running!" 
+          message: "API is up and running securely!" 
         }), { status: 200 });
       } 
       else if (path.startsWith('/peer/api/exams')) {
@@ -40,27 +101,18 @@ export default {
       else if (path.startsWith('/peer/api/student-exams')) {
         response = await studentExamsHandler(request, env);
       }
-      // הנתיב למערכת ימות המשיח (אזור מנהלים להזנת ציונים)
       else if (path.startsWith('/peer/api/yemot/manager')) {
         response = await handleYemotManager(request, env);
-        // מחזירים את התשובה ישירות כטקסט עבור ימות המשיח, ולא כ-JSON
-        return response;
+        return response; 
       }
-      // הנתיב החדש למערכת ימות המשיח (אזור אישי לתלמידים)
       else if (path.startsWith('/peer/api/yemot/student')) {
         response = await handleYemotStudents(request, env);
-        // מחזירים את התשובה ישירות כטקסט עבור ימות המשיח, ולא כ-JSON
-        return response;
+        return response; 
       }
       else {
         response = new Response(JSON.stringify({ error: 'Not Found' }), { status: 404 });
       }
       
-      // הוספת פקודות CORS רק לתשובות שאינן של ימות המשיח (ימות המשיח מקבלת טקסט נקי)
-      if (path.startsWith('/peer/api/yemot/manager') || path.startsWith('/peer/api/yemot/student')) {
-          return response;
-      }
-
       const newHeaders = new Headers(response.headers);
       for (const [key, value] of Object.entries(corsHeaders)) {
         newHeaders.set(key, value);
@@ -74,7 +126,8 @@ export default {
 
     } catch (error) {
       return new Response(JSON.stringify({ error: error.message }), { 
-        status: 500, headers: corsHeaders
+        status: 500, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
   }
