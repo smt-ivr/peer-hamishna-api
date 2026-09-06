@@ -82,7 +82,7 @@ export default {
          if (!isAuthorized) {
              return new Response(JSON.stringify({ 
                  error: 'Unauthorized Access',
-                 message: 'Invalid IP address or missing/incorrect API key.'
+                 message: 'אין לכם הרשאה לצפות או לעדכן נתונים'
              }), { 
                  status: 401, 
                  headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
@@ -94,7 +94,7 @@ export default {
          if (accessLevel === 'read_only' && isWriteMethod) {
              return new Response(JSON.stringify({ 
                  error: 'Forbidden',
-                 message: 'Your access level (read_only) does not permit modifying data.'
+                 message: ',לא ניתן לשנות נתונים, ההרשאה שלכם מוגבלת לצפייה בלבד'
              }), { 
                  status: 403, 
                  headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
