@@ -35,14 +35,14 @@ export async function handleYemotManager(request, env) {
         }
     }
 
-    // שליפת הנתונים לפי האינדקס הנוכחי
+    // 2. שליפת הנתונים לפי האינדקס הנוכחי בלבד
     const studentCode = url.searchParams.get(`student_code_${maxIndex}`);
     const examInput = url.searchParams.get(`exam_input_${maxIndex}`);
     const passInput = url.searchParams.get(`pass_input_${maxIndex}`);
 
     // יציאה וביטול - אם הוקש כוכבית באחד השלבים
     if (studentCode === '*' || examInput === '*' || passInput === '*') {
-        return new Response("go_to_folder=.&", { 
+        return new Response("id_list_message=t-יציאה מתפריט עדכון המבחנים, שלום&", { 
             headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
         });
     }
@@ -99,7 +99,7 @@ export async function handleYemotManager(request, env) {
             const targetGradeVal = getGradeValue(exam.target_grade);
             
             if (studentGradeVal > 0 && targetGradeVal > 0 && studentGradeVal < targetGradeVal) {
-                return new Response(`read=t-שגיאה, המבחן מיועד לכיתה גבוהה יותר. הקישו קוד מבחן אחר=exam_input_${maxIndex},,,,,NO,,,,,,,,,no`, { 
+                return new Response(`read=t-שגיאה, המבחן מיועד לכיתה גבוהה יותר, הקישו קוד מבחן אחר=exam_input_${maxIndex},,,,,NO,,,,,,,,,no`, { 
                     headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
                 });
             }
@@ -108,13 +108,13 @@ export async function handleYemotManager(request, env) {
         // מניעת דריסה
         const existingResult = await env.DB.prepare("SELECT * FROM student_exams WHERE student_code = ? AND exam_code = ?").bind(studentCode, examCode).first();
         if (existingResult) {
-            return new Response(`read=t-שימו לב, למבחן ${examCode} כבר קיים ציון במערכת. הקישו קוד מבחן אחר, או כוכבית ליציאה=exam_input_${maxIndex},,,,,NO,,,,,,,,,no`, { 
+            return new Response(`read=t-שימו לב, למבחן ${examCode} כבר קיים ציון במערכת, הקישו קוד מבחן אחר, או כוכבית ליציאה=exam_input_${maxIndex},,,,,NO,,,,,,,,,no`, { 
                 headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
             });
         }
 
         let examDetails = `מבחן ${examCode}, `;
-        if (exam.masechet) examDetails += `מסכת ${exam.masechet}, `;
+        if (exam.masechet) examDetails += `חלק ${exam.masechet}, `;
         if (exam.chapter_num) examDetails += `פרק ${exam.chapter_num}, `;
         if (exam.chapter_name) examDetails += `${exam.chapter_name}, `;
         if (exam.from_page && exam.to_page) examDetails += `מ ${exam.from_page} עד ${exam.to_page}, `;
@@ -129,7 +129,7 @@ export async function handleYemotManager(request, env) {
         const passedValue = passInput === '1' ? 1 : 2;
         const currentTime = getLocalTime(); 
 
-        // ON CONFLICT DO NOTHING מבטיח שלא נקרוס במקרה של ניתוק ושליחה כפולה מצד ימות המשיח
+        // מונע קריסה במקרה של שגיאה או כפילות מאוחרת
         await env.DB.prepare(`
             INSERT INTO student_exams (student_code, exam_code, passed, updated_at, update_source, source_identifier)
             VALUES (?, ?, ?, ?, 'phone', ?)
@@ -138,12 +138,12 @@ export async function handleYemotManager(request, env) {
 
         const nextIndex = maxIndex + 1;
         
-        // מדלגים לאינדקס הבא כדי ליצור רצף הזנות ללא חזרה לתפריט הראשי
-        return new Response(`read=t-הציון למבחן ${examCode} עבור ${student.first_name} ${student.last_name} עודכן בהצלחה. להזנת תלמיד נוסף הקישו קוד תלמיד, או כוכבית לסיום=student_code_${nextIndex},,,,,NO,,,,,,,,,no`, { 
+        // מדלגים לאינדקס הבא כדי ליצור רצף הזנות
+        return new Response(`read=t-הציון למבחן ${examCode} עבור ${student.first_name} ${student.last_name} עודכן בהצלחה, להזנת תלמיד נוסף הקישו קוד תלמיד, או כוכבית לסיום=student_code_${nextIndex},,,,,NO,,,,,,,,,no`, { 
             headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
         });
     } catch (error) {
-        return new Response(`read=t-אירעה שגיאה בשמירת הנתונים. נסו שוב=pass_input_${maxIndex},,1,,,NO,,,,12,,,,,no`, { 
+        return new Response(`read=t-אירעה שגיאה בשמירת הנתונים, נסו שוב=pass_input_${maxIndex},,1,,,NO,,,,12,,,,,no`, { 
             headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
         });
     }
