@@ -1,10 +1,11 @@
 import examsHandler from './exams.js';
 import studentsHandler from './students.js';
 import studentExamsHandler from './student_exams.js';
+import studentSummaryHandler from './student_summary.js'; // התוספת החדשה
 import { handleYemotManager } from './yemot_manager.js';
 import { handleYemotStudents } from './yemot_students.js';
 
-const API_VERSION = "1.4.0";
+const API_VERSION = "1.5.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -120,6 +121,9 @@ export default {
       }
       else if (path.startsWith('/peer/api/student-exams')) {
         response = await studentExamsHandler(request, env);
+      }
+      else if (path.startsWith('/peer/api/student-summary')) {
+        response = await studentSummaryHandler(request, env); // הניתוב של סיכום התלמידים
       }
       else if (path.startsWith('/peer/api/yemot/manager')) {
         response = await handleYemotManager(request, env);
