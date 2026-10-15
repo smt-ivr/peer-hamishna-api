@@ -2,7 +2,7 @@ import examsHandler from './exams.js';
 import studentsHandler from './students.js';
 import studentExamsHandler from './student_exams.js';
 import studentSummaryHandler from './student_summary.js';
-import reportSettingsHandler from './report_settings.js'; // הגדרות עיצוב הדוחות
+import reportSettingsHandler from './report_settings.js'; // 
 import { handleYemotManager } from './yemot_manager.js';
 import { handleYemotStudents } from './yemot_students.js';
 
