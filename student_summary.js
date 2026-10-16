@@ -161,7 +161,9 @@ export default async function studentSummaryHandler(request, env) {
           status_text: statusText, 
           passed: passed, 
           reward_earned: rewardEarned, 
-          potential_reward: examReward 
+          potential_reward: examReward,
+          updated_at: studentExamRecord ? studentExamRecord.updated_at : null,
+          update_source: studentExamRecord ? studentExamRecord.update_source : null
         });
       });
 
