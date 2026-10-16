@@ -1,3 +1,22 @@
+// ---------- ולידציה: שם פרטי, שם משפחה וכיתה הם חובה ----------
+const CODE_RE = /^[0-9A-Za-z\u0590-\u05FF_-]{1,20}$/;
+const clean = (v, max) => String(v ?? '').trim().slice(0, max);
+const badRequest = (message) => new Response(JSON.stringify({ error: 'Validation failed', message }), { status: 400 });
+
+function validateStudent(body) {
+  if (!body || typeof body !== 'object') return { message: 'נתונים חסרים' };
+  const first_name = clean(body.first_name, 40);
+  const last_name = clean(body.last_name, 40);
+  const class_grade = clean(body.class_grade, 12);
+  if (!first_name) return { message: 'חובה להזין שם פרטי' };
+  if (!last_name) return { message: 'חובה להזין שם משפחה' };
+  if (!class_grade) return { message: 'חובה להזין כיתה. לא ניתן לרשום תלמיד ללא כיתה' };
+  const code = body.student_code == null ? '' : String(body.student_code).trim();
+  if (code && !CODE_RE.test(code)) return { message: 'קוד תלמיד לא תקין (עד 20 תווים: אותיות, ספרות, מקף או קו תחתון)' };
+  const phones = (Array.isArray(body.phones) ? body.phones : []).map(p => clean(p, 20)).filter(Boolean).slice(0, 5);
+  return { data: { student_code: code, first_name, last_name, class_grade, phones } };
+}
+
 // פונקציית עזר ליצירת קוד תלמיד אוטומטי
 async function getNextStudentCode(env) {
   const result = await env.DB.prepare(
@@ -163,33 +182,43 @@ export default async function studentsHandler(request, env) {
         const validStudents = studentsArray.filter(s => s && s.student_code);
         if (validStudents.length === 0) return new Response(JSON.stringify({ error: 'No valid data' }), { status: 400 });
 
-        const stmts = validStudents.map(student => 
+        // הכול או כלום: שורה לא תקינה (למשל בלי כיתה) עוצרת את כל ההוספה
+        const cleaned = [];
+        for (let i = 0; i < validStudents.length; i++) {
+          const v = validateStudent(validStudents[i]);
+          if (!v.data || !v.data.student_code) return badRequest(`שורה ${i + 1}: ${v.message || 'חסר קוד תלמיד'}`);
+          cleaned.push(v.data);
+        }
+
+        const stmts = cleaned.map(student =>
           env.DB.prepare(`
             INSERT INTO students (student_code, first_name, last_name, class_grade, phones)
             VALUES (?, ?, ?, ?, ?)
-          `).bind(student.student_code, student.first_name || '', student.last_name || '', student.class_grade || '', JSON.stringify(student.phones || []))
+          `).bind(student.student_code, student.first_name, student.last_name, student.class_grade, JSON.stringify(student.phones))
         );
         const results = await env.DB.batch(stmts);
         return new Response(JSON.stringify({ success: true, count: results.length }), { status: 201 });
       } else {
-        const body = await request.json();
-        const finalCode = body.student_code ? body.student_code.toString() : await getNextStudentCode(env);
+        const v = validateStudent(await request.json());
+        if (!v.data) return badRequest(v.message);
+        const finalCode = v.data.student_code || await getNextStudentCode(env);
         const result = await env.DB.prepare(`
           INSERT INTO students (student_code, first_name, last_name, class_grade, phones)
           VALUES (?, ?, ?, ?, ?) RETURNING *
-        `).bind(finalCode, body.first_name || '', body.last_name || '', body.class_grade || '', JSON.stringify(body.phones || [])).first();
+        `).bind(finalCode, v.data.first_name, v.data.last_name, v.data.class_grade, JSON.stringify(v.data.phones)).first();
         return new Response(JSON.stringify(formatStudent(result)), { status: 201 });
       }
     }
     
     // נתיב 1: עדכון פרטי תלמיד רגיל (ללא אפשרות שינוי קוד התלמיד)
     if (method === 'PUT' && studentCode && studentCode !== 'bulk' && !subAction) {
-      const body = await request.json();
-      
+      const v = validateStudent(await request.json());
+      if (!v.data) return badRequest(v.message);
+
       const result = await env.DB.prepare(`
         UPDATE students SET first_name = ?, last_name = ?, class_grade = ?, phones = ?
         WHERE student_code = ? AND is_deleted = 0 RETURNING *
-      `).bind(body.first_name || '', body.last_name || '', body.class_grade || '', JSON.stringify(body.phones || []), studentCode).first();
+      `).bind(v.data.first_name, v.data.last_name, v.data.class_grade, JSON.stringify(v.data.phones), studentCode).first();
       
       if (!result) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
       return new Response(JSON.stringify(formatStudent(result)), { status: 200 });
@@ -201,17 +230,20 @@ export default async function studentsHandler(request, env) {
       const newCode = body.new_student_code ? body.new_student_code.toString() : null;
 
       if (!newCode) {
-        return new Response(JSON.stringify({ error: 'new_student_code is required' }), { status: 400 });
+        return badRequest('חובה להזין קוד תלמיד חדש');
+      }
+      if (!CODE_RE.test(newCode)) {
+        return badRequest('קוד תלמיד לא תקין (עד 20 תווים: אותיות, ספרות, מקף או קו תחתון)');
       }
 
       if (newCode === studentCode) {
-        return new Response(JSON.stringify({ error: 'New code is the same as the old code' }), { status: 400 });
+        return new Response(JSON.stringify({ error: 'New code is the same as the old code', message: 'הקוד החדש זהה לקוד הקיים' }), { status: 400 });
       }
 
       // מוודאים שהקוד החדש לא תפוס כבר על ידי תלמיד אחר
       const existing = await env.DB.prepare("SELECT student_code FROM students WHERE student_code = ? AND is_deleted = 0").bind(newCode).first();
       if (existing) {
-        return new Response(JSON.stringify({ error: 'Student code already exists' }), { status: 409 });
+        return new Response(JSON.stringify({ error: 'Student code already exists', message: 'הקוד כבר תפוס על ידי תלמיד אחר' }), { status: 409 });
       }
 
       // מעדכנים גם את טבלת התלמידים וגם את תוצאות המבחנים באותה פעימה
@@ -239,7 +271,7 @@ export default async function studentsHandler(request, env) {
     return new Response(JSON.stringify({ error: 'Method Not Allowed' }), { status: 405 });
     
   } catch (error) {
-    if (error.message.includes('UNIQUE constraint failed')) return new Response(JSON.stringify({ error: 'Student code already exists' }), { status: 400 });
+    if (error.message.includes('UNIQUE constraint failed')) return new Response(JSON.stringify({ error: 'Student code already exists', message: 'קוד התלמיד כבר קיים במערכת' }), { status: 409 });
     return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   }
 }
