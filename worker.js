@@ -7,6 +7,7 @@ import { handleYemotManager } from './yemot_manager.js';
 import { handleYemotStudents } from './yemot_students.js';
 import dashboardHandler from './dashboard.js';
 import adminHandler from './admin.js';
+import authLoginHandler from './auth_login.js';
 
 const API_VERSION = "1.6.0";
 
@@ -55,6 +56,12 @@ export default {
           status: 200, 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
         });
+      }
+
+      // -- נתיב פתוח לכניסה למערכת (אותה בדיקה כמו auth-check + רישום בהיסטוריה) --
+      if (path === '/peer/api/auth/login') {
+        const r = await authLoginHandler(request, env);
+        return new Response(r.body, { status: r.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
       // -- מנגנון אבטחה מול מסד הנתונים --

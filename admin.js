@@ -1,9 +1,12 @@
+import { getLocalTime } from './time.js';
+
 // ============================================================
 //  admin.js — ניהול הרשאות (סיסמאות וכתובות IP) — למנהל-על בלבד
 //  GET    /peer/api/admin/auth-rules                 רשימת כל ההרשאות
 //  POST   /peer/api/admin/auth-rules                 הוספה  { rule_type, rule_value, access_level, description }
 //  PUT    /peer/api/admin/auth-rules?value=<קיים>    עדכון  (אותו גוף; אפשר לשנות גם את הערך עצמו)
 //  DELETE /peer/api/admin/auth-rules?value=<קיים>    מחיקה
+//  GET    /peer/api/admin/login-log                  היסטוריית כניסות  ?result=success|fail &q= &before_id= &limit=
 //  ההרשאה נבדקת כאן מחדש: רק בקשה שזוהתה כ-super_admin (סיסמה או IP) עוברת.
 // ============================================================
 
@@ -55,7 +58,11 @@ export default async function adminHandler(request, env) {
   const { rule: me, clientIp } = await identify(request, env);
   if (!me || me.access_level !== SUPER_ADMIN) return fail(403, 'אזור זה זמין למנהל-על בלבד');
 
-  if (url.pathname.replace(/\/+$/, '') !== '/peer/api/admin/auth-rules') {
+  const route = url.pathname.replace(/\/+$/, '');
+  if (route === '/peer/api/admin/login-log') {
+    return method === 'GET' ? loginLog(url, env) : json({ error: 'Method Not Allowed' }, 405);
+  }
+  if (route !== '/peer/api/admin/auth-rules') {
     return json({ error: 'Not Found' }, 404);
   }
 
@@ -120,6 +127,74 @@ export default async function adminHandler(request, env) {
 
     return json({ error: 'Method Not Allowed' }, 405);
   } catch (error) {
+    return json({ error: 'Server Error', message: error.message }, 500);
+  }
+}
+
+// ============================================================
+//  היסטוריית כניסות
+// ============================================================
+function shiftLocal(now, hours) {
+  const d = new Date(now.replace(' ', 'T') + 'Z');
+  d.setUTCHours(d.getUTCHours() - hours);
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+async function loginLog(url, env) {
+  const result = url.searchParams.get('result');
+  const q = (url.searchParams.get('q') || '').trim();
+  const beforeId = parseInt(url.searchParams.get('before_id'), 10);
+  const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit'), 10) || 100, 1), 300);
+
+  const where = [];
+  const args = [];
+  if (result === 'success') where.push('success = 1');
+  if (result === 'fail') where.push('success = 0');
+  if (q) { where.push("(ip LIKE ? OR IFNULL(rule_description, '') LIKE ? OR IFNULL(city, '') LIKE ?)"); args.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+  if (!isNaN(beforeId)) { where.push('id < ?'); args.push(beforeId); }
+  const sqlWhere = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const now = getLocalTime();
+  const today = now.slice(0, 10);
+  const since24 = shiftLocal(now, 24);
+  const since7d = shiftLocal(now, 24 * 7);
+
+  try {
+    const [rows, stats, topFail] = await env.DB.batch([
+      env.DB.prepare(`SELECT * FROM login_log ${sqlWhere} ORDER BY id DESC LIMIT ?`).bind(...args, limit + 1),
+      env.DB.prepare(`
+        SELECT
+          SUM(CASE WHEN success = 1 AND created_at >= ? THEN 1 ELSE 0 END) AS today_success,
+          SUM(CASE WHEN success = 0 AND created_at >= ? THEN 1 ELSE 0 END) AS today_fail,
+          SUM(CASE WHEN success = 0 AND created_at >= ? THEN 1 ELSE 0 END) AS fail_24h,
+          COUNT(DISTINCT CASE WHEN created_at >= ? THEN ip END) AS unique_ips_7d,
+          COUNT(*) AS total
+        FROM login_log
+      `).bind(today, today, since24, since7d),
+      env.DB.prepare(`
+        SELECT ip, COUNT(*) AS count, MAX(created_at) AS last, MAX(country) AS country, MAX(city) AS city
+        FROM login_log WHERE success = 0 AND created_at >= ?
+        GROUP BY ip ORDER BY count DESC LIMIT 5
+      `).bind(since7d)
+    ]);
+    const list = rows.results;
+    const s = stats.results[0] || {};
+    return json({
+      rows: list.slice(0, limit),
+      has_more: list.length > limit,
+      stats: {
+        today_success: s.today_success || 0,
+        today_fail: s.today_fail || 0,
+        fail_24h: s.fail_24h || 0,
+        unique_ips_7d: s.unique_ips_7d || 0,
+        total: s.total || 0
+      },
+      top_fail_ips: topFail.results
+    });
+  } catch (error) {
+    if (/no such table/i.test(error.message)) {
+      return json({ rows: [], has_more: false, stats: { today_success: 0, today_fail: 0, fail_24h: 0, unique_ips_7d: 0, total: 0 }, top_fail_ips: [], message: 'טבלת היסטוריית הכניסות עדיין לא נוצרה' });
+    }
     return json({ error: 'Server Error', message: error.message }, 500);
   }
 }
