@@ -5,6 +5,8 @@ import studentSummaryHandler from './student_summary.js';
 import reportSettingsHandler from './report_settings.js'; // 
 import { handleYemotManager } from './yemot_manager.js';
 import { handleYemotStudents } from './yemot_students.js';
+import dashboardHandler from './dashboard.js';
+import adminHandler from './admin.js';
 
 const API_VERSION = "1.6.0";
 
@@ -128,6 +130,12 @@ export default {
       }
       else if (path.startsWith('/peer/api/report-settings')) {
         response = await reportSettingsHandler(request, env);
+      }
+      else if (path.startsWith('/peer/api/dashboard')) {
+        response = await dashboardHandler(request, env);
+      }
+      else if (path.startsWith('/peer/api/admin')) {
+        response = await adminHandler(request, env);
       }
       else if (path.startsWith('/peer/api/yemot/manager')) {
         response = await handleYemotManager(request, env);
