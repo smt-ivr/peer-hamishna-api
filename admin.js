@@ -18,7 +18,7 @@ const json = (data, status = 200) => new Response(JSON.stringify(data), { status
 const fail = (status, message) => json({ error: status === 403 ? 'Forbidden' : 'Validation failed', message }, status);
 
 // אותו סדר בדיקה כמו ב-worker.js: קודם סיסמה, אחר כך IP
-async function identify(request, env) {
+export async function identify(request, env) {
   const url = new URL(request.url);
   const clientIp = request.headers.get('cf-connecting-ip') || 'unknown';
   const apiKey = request.headers.get('x-api-key') || url.searchParams.get('api_key');

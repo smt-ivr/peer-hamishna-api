@@ -8,8 +8,9 @@ import { handleYemotStudents } from './yemot_students.js';
 import dashboardHandler from './dashboard.js';
 import adminHandler from './admin.js';
 import authLoginHandler from './auth_login.js';
+import phoneAdminHandler from './phone_admin.js';
 
-const API_VERSION = "1.6.0";
+const API_VERSION = "1.7.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -140,6 +141,9 @@ export default {
       }
       else if (path.startsWith('/peer/api/dashboard')) {
         response = await dashboardHandler(request, env);
+      }
+      else if (path === '/peer/api/phone' || path.startsWith('/peer/api/phone/')) {
+        response = await phoneAdminHandler(request, env);
       }
       else if (path.startsWith('/peer/api/admin')) {
         response = await adminHandler(request, env);

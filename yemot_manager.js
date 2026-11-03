@@ -1,4 +1,5 @@
 import { getLocalTime } from './time.js';
+import { phoneGate, logUpdate } from './phone_access.js';
 
 // פונקציית עזר לחישוב והשוואת כיתות
 function getGradeValue(gradeStr) {
@@ -34,6 +35,11 @@ function getLatestInput(url, prefix) {
 export async function handleYemotManager(request, env) {
     const url = new URL(request.url);
     const apiPhone = url.searchParams.get('ApiPhone'); 
+
+    // שער ההרשאות: רשימה לבנה / שעות פעילות / קו כבוי (נבדק בכל שלב בשיחה)
+    const isFirst = ![...url.searchParams.keys()].some(k => k.startsWith('student_code_'));
+    const gate = await phoneGate(request, env, 'manager', isFirst);
+    if (gate.block) return gate.block;
     
     if (!apiPhone) {
         return new Response("read=t-שגיאה, לא ניתן לעדכן מבחן ללא זיהוי מספר הטלפון המעדכן=error_input,,,,,NO,,,,,,,,,no", { 
@@ -142,6 +148,7 @@ export async function handleYemotManager(request, env) {
             VALUES (?, ?, ?, ?, 'phone', ?)
             ON CONFLICT(student_code, exam_code) DO NOTHING
         `).bind(studentCode, examCode, passedValue, currentTime, apiPhone).run();
+        await logUpdate(env, gate.ctx, student, examCode, passedValue);
         
         // מעלים אינדקס לתלמיד הבא ליצירת לולאה רציפה
         return new Response(`read=t-הציון למבחן ${examCode} עבור ${student.first_name} ${student.last_name} עודכן בהצלחה, להזנת תלמיד נוסף הקישו קוד תלמיד, או כוכבית לסיום=student_code_${studentReq.nextIndex},,,,,NO,,,,,,,,,no`, { 
