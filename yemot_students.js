@@ -1,5 +1,11 @@
+import { phoneGate } from './phone_access.js';
+
 export async function handleYemotStudents(request, env) {
     const url = new URL(request.url);
+
+    // שער ההרשאות של קו התלמידים
+    const gate = await phoneGate(request, env, 'student', !url.searchParams.has('student_code'));
+    if (gate.block) return gate.block;
     
     // שליפת קוד התלמיד מהשלוחה בימות המשיח
     const studentCode = url.searchParams.get('student_code');
