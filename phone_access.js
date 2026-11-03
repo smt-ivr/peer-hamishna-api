@@ -2,15 +2,14 @@ import { getLocalTime } from './time.js';
 
 // ============================================================
 //  phone_access.js — הרשאות לקו עדכון הציונים (ימות המשיח)
-//  רק מספרים שברשימה יכולים לעדכן, ובשעות שהוגדרו לכל מספר.
-//  כל עוד הרשימה ריקה — הקו פתוח כמו קודם (כדי לא לנעול את המערכת לפני שהוזנו מספרים).
+//  רק מספרים שברשימה יכולים לעדכן, ובשעות שהוגדרו לכל מספר — תמיד, בלי יוצא מן הכלל.
+//  רשימה ריקה = אף אחד לא יכול לעדכן. תקלה בבדיקה = חסימה.
 //  מספר לא מורשה: ניתוק, או העברה לשלוחה אחרת (עם הודעה לפני, אם רוצים).
 //  קו התלמידים לא מוגבל.
 // ============================================================
 
 export const REASONS = {
     ok_listed: 'אושר',
-    ok_empty: 'אושר (הרשימה ריקה)',
     no_caller_id: 'מספר חסוי',
     not_listed: 'המספר לא ברשימה',
     inactive: 'המספר מושבת',
@@ -54,8 +53,7 @@ export function inWindow(days, from, to, t) {
 }
 
 // ---------- ההחלטה ----------
-export function decide(listSize, phone, entry, t) {
-    if (!listSize) return 'ok_empty';
+export function decide(phone, entry, t) {
     if (!phone) return 'no_caller_id';
     if (!entry) return 'not_listed';
     if (!entry.active) return 'inactive';
@@ -70,6 +68,26 @@ export function blockCommand(cfg) {
     parts.push(`go_to_folder=${cfg.action === 'goto' && validFolder(cfg.folder) ? cfg.folder : 'hangup'}`);
     return parts.join('&');
 }
+// מחוץ לשעות של המספר: אומרים שזה מחוץ לשעות ומתי כן אפשר (שעות בתבנית z-T13:00 של ימות המשיח)
+const DAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+export function daysSpoken(days) {
+    const d = [...new Set(days)].sort((a, b) => a - b);
+    if (d.length === 7) return 'בכל יום';
+    const parts = [];
+    for (let i = 0; i < d.length; i++) {
+        let j = i;
+        while (j + 1 < d.length && d[j + 1] === d[j] + 1) j++;
+        if (j - i >= 2) parts.push(`${DAY_NAMES[d[i]]} עד ${DAY_NAMES[d[j]]}`);
+        else for (let k = i; k <= j; k++) parts.push(DAY_NAMES[d[k]]);
+        i = j;
+    }
+    return (d.length === 1 ? 'ביום ' : 'בימים ') + parts.join(' ו');
+}
+export function hoursCommand(entry, cfg) {
+    const msg = `id_list_message=t-השעה הזו מחוץ לשעות העדכון שלכם ניתן לעדכן ${daysSpoken(parseDays(entry.days))} משעה.z-T${entry.time_from}.t-עד שעה.z-T${entry.time_to}`;
+    return `${msg}&go_to_folder=${cfg.action === 'goto' && validFolder(cfg.folder) ? cfg.folder : 'hangup'}`;
+}
+
 export const actionLabel = cfg => cfg.action === 'goto' && validFolder(cfg.folder) ? `goto:${cfg.folder}` : 'hangup';
 
 // ---------- מסד ----------
@@ -104,15 +122,13 @@ export async function phoneGate(request, env, first) {
     const ctx = { phone, call_id, entry: null };
     let settings, reason;
     try {
-        const [s, count, entry] = await Promise.all([
+        const [s, entry] = await Promise.all([
             loadSettings(env),
-            env.DB.prepare('SELECT COUNT(*) AS c FROM phone_numbers').first(),
             phone ? env.DB.prepare('SELECT * FROM phone_numbers WHERE phone = ?').bind(phone).first() : null
         ]);
         settings = s; ctx.entry = entry;
-        reason = decide(count ? count.c : 0, phone, entry, nowParts());
+        reason = decide(phone, entry, nowParts());
     } catch (e) {
-        if (/no such table/i.test(e.message)) return { block: null, ctx };   // לפני התקנת הטבלאות — כמו קודם
         await writeLog(env, { event: 'call', phone, call_id, reason: 'error', action: 'hangup' });
         return { block: text('id_list_message=t-אירעה תקלה זמנית במערכת נסו שוב מאוחר יותר&go_to_folder=hangup'), ctx };
     }
@@ -126,7 +142,8 @@ export async function phoneGate(request, env, first) {
         }
         if (log) await writeLog(env, { event: 'call', phone, call_id, number_id: ctx.entry && ctx.entry.id, number_name: ctx.entry && ctx.entry.name, reason, action: allowed ? 'continue' : actionLabel(settings.blocked) });
     }
-    return { block: allowed ? null : text(blockCommand(settings.blocked)), ctx };
+    if (allowed) return { block: null, ctx };
+    return { block: text(reason === 'number_hours' ? hoursCommand(ctx.entry, settings.blocked) : blockCommand(settings.blocked)), ctx };
 }
 
 export function logUpdate(env, ctx, student, examCode, passed) {
