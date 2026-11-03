@@ -1,8 +1,10 @@
 import { getLocalTime } from './time.js';
 
 // הגדרות עיצוב הדוחות — נשמרות כ-JSON בטבלת report_settings.
-// כרגע פרופיל אחד ('default') שמשותף לכל המשתמשים; הטבלה כבר מוכנה לפרופילים נוספים.
+// פרופילים: 'default' = עיצוב דוח ההישגים, 'student_list' = הגדרות רשימת התלמידים להדפסה.
+// נבחר ב-?profile=... ; משותף לכל המשתמשים.
 const DEFAULT_PROFILE = 'default';
+const PROFILES = new Set(['default', 'student_list']);
 const MAX_BYTES = 16 * 1024;
 
 function json(data, status = 200) {
@@ -12,7 +14,9 @@ function json(data, status = 200) {
 export default async function reportSettingsHandler(request, env) {
   const method = request.method;
   const clientIp = request.headers.get('cf-connecting-ip') || 'unknown';
-  const profile = DEFAULT_PROFILE;
+  const asked = new URL(request.url).searchParams.get('profile') || DEFAULT_PROFILE;
+  if (!PROFILES.has(asked)) return json({ error: 'Unknown profile' }, 400);
+  const profile = asked;
 
   try {
     // קריאה: מחזיר { settings: null } אם עדיין לא נשמר עיצוב מותאם
