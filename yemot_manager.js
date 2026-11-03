@@ -36,9 +36,9 @@ export async function handleYemotManager(request, env) {
     const url = new URL(request.url);
     const apiPhone = url.searchParams.get('ApiPhone'); 
 
-    // שער ההרשאות: רשימה לבנה / שעות פעילות / קו כבוי (נבדק בכל שלב בשיחה)
+    // שער ההרשאות: רק מספרים מורשים, בשעות שלהם (נבדק בכל שלב בשיחה)
     const isFirst = ![...url.searchParams.keys()].some(k => k.startsWith('student_code_'));
-    const gate = await phoneGate(request, env, 'manager', isFirst);
+    const gate = await phoneGate(request, env, isFirst);
     if (gate.block) return gate.block;
     
     if (!apiPhone) {
