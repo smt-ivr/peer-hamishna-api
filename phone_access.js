@@ -13,6 +13,7 @@ export const REASONS = {
     no_caller_id: 'מספר חסוי',
     not_listed: 'המספר לא ברשימה',
     inactive: 'המספר מושבת',
+    expired: 'תוקף ההרשאה הסתיים',
     number_hours: 'מחוץ לשעות של המספר',
     error: 'תקלה בבדיקה'
 };
@@ -54,11 +55,16 @@ export function inWindow(days, from, to, t) {
     return (set.has(t.day) && t.hm >= from) || (set.has((t.day + 6) % 7) && t.hm <= to);
 }
 
+// תוקף: 'YYYY-MM-DD HH:MM' (או תאריך בלבד = עד סוף היום)
+export const untilOf = v => { const s = String(v || '').trim(); return !s ? '' : s.length === 10 ? s + ' 23:59' : s.slice(0, 16); };
+export const isExpired = (entry, local = getLocalTime()) => !!(entry && entry.valid_until && local.slice(0, 16) > untilOf(entry.valid_until));
+
 // ---------- ההחלטה ----------
 export function decide(phone, entry, t) {
     if (!phone) return 'no_caller_id';
     if (!entry) return 'not_listed';
     if (!entry.active) return 'inactive';
+    if (isExpired(entry, t.local)) return 'expired';
     if (entry.sched_enabled && !inWindow(parseDays(entry.days), entry.time_from, entry.time_to, t)) return 'number_hours';
     return 'ok_listed';
 }
@@ -88,6 +94,10 @@ export function daysSpoken(days) {
 export function hoursCommand(entry, cfg) {
     const msg = `id_list_message=t-השעה הזו מחוץ לשעות העדכון שלכם ניתן לעדכן ${daysSpoken(parseDays(entry.days))} משעה.z-T${entry.time_from}.t-עד שעה.z-T${entry.time_to}`;
     return `${msg}&go_to_folder=${cfg.action === 'goto' && validFolder(cfg.folder) ? cfg.folder : 'hangup'}`;
+}
+
+export function expiredCommand(cfg) {
+    return `id_list_message=t-תוקף ההרשאה שלכם לעדכון ציונים הסתיים, לחידוש ההרשאה פנו להנהלה&go_to_folder=${cfg.action === 'goto' && validFolder(cfg.folder) ? cfg.folder : 'hangup'}`;
 }
 
 export const actionLabel = cfg => cfg.action === 'goto' && validFolder(cfg.folder) ? `goto:${cfg.folder}` : 'hangup';
@@ -145,7 +155,8 @@ export async function phoneGate(request, env, first) {
         if (log) await writeLog(env, { event: 'call', phone, call_id, number_id: ctx.entry && ctx.entry.id, number_name: ctx.entry && ctx.entry.name, reason, action: allowed ? 'continue' : actionLabel(settings.blocked) });
     }
     if (allowed) return { block: null, ctx };
-    return { block: text(reason === 'number_hours' ? hoursCommand(ctx.entry, settings.blocked) : blockCommand(settings.blocked)), ctx };
+    const cmd = reason === 'number_hours' ? hoursCommand(ctx.entry, settings.blocked) : reason === 'expired' ? expiredCommand(settings.blocked) : blockCommand(settings.blocked);
+    return { block: text(cmd), ctx };
 }
 
 export function logUpdate(env, ctx, student, examCode, passed, reason = 'saved') {
