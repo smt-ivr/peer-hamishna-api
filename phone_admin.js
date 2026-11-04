@@ -5,8 +5,8 @@ import { REASONS, cleanSettings, settingsError, loadSettings, normalizePhone, va
 // ============================================================
 //  phone_admin.js — מספרים מורשים לקו עדכון הציונים (למנהל-על בלבד)
 //  GET    /peer/api/phone                      הגדרה + מספרים + סיכום היום + מספרים שעדכנו בעבר ואינם ברשימה
-//  PUT    /peer/api/phone/settings             { settings: { blocked: { action, folder, message } } }
-//  POST   /peer/api/phone/numbers              הוספה   { name, phone, active, sched_enabled, days, time_from, time_to }
+//  PUT    /peer/api/phone/settings             { settings: { edit_minutes, blocked: { action, folder, message } } }
+//  POST   /peer/api/phone/numbers              הוספה   { name, phone, active, can_override, sched_enabled, days, time_from, time_to }
 //  PUT    /peer/api/phone/numbers?id=          עדכון
 //  DELETE /peer/api/phone/numbers?id=          מחיקה
 //  GET    /peer/api/phone/log                  יומן שיחות  ?result=allowed|blocked &q= &before_id= &limit=
@@ -28,7 +28,7 @@ function validateNumber(b) {
     if (name.length > 80) return { message: 'השם ארוך מדי' };
     if (sched && !days.length) return { message: 'יש לבחור לפחות יום אחד' };
     if (!HM.test(from) || !HM.test(to)) return { message: 'שעה לא תקינה' };
-    return { data: { phone, name, active: b.active === false || b.active === 0 ? 0 : 1, sched_enabled: sched ? 1 : 0, days: days.join(','), time_from: from, time_to: to } };
+    return { data: { phone, name, active: b.active === false || b.active === 0 ? 0 : 1, can_override: b.can_override ? 1 : 0, sched_enabled: sched ? 1 : 0, days: days.join(','), time_from: from, time_to: to } };
 }
 
 export default async function phoneAdminHandler(request, env) {
@@ -44,7 +44,7 @@ export default async function phoneAdminHandler(request, env) {
             const today = getLocalTime().slice(0, 10);
             const [settings, numbers, stats, past] = await Promise.all([
                 loadSettings(env),
-                env.DB.prepare(`SELECT n.id, n.phone, n.name, n.active, n.sched_enabled, n.days, n.time_from, n.time_to,
+                env.DB.prepare(`SELECT n.id, n.phone, n.name, n.active, n.can_override, n.sched_enabled, n.days, n.time_from, n.time_to,
                         (SELECT MAX(created_at) FROM phone_log l WHERE l.phone = n.phone AND l.event = 'call') AS last_call
                     FROM phone_numbers n ORDER BY n.name COLLATE NOCASE`).all(),
                 env.DB.prepare(`SELECT SUM(CASE WHEN event = 'call' THEN 1 ELSE 0 END) AS calls,
@@ -81,13 +81,13 @@ export default async function phoneAdminHandler(request, env) {
                 const dup = await env.DB.prepare('SELECT id, name FROM phone_numbers WHERE phone = ?').bind(d.phone).first();
                 if (dup && (method === 'POST' || dup.id !== id)) return bad(`המספר כבר ברשימה (${dup.name})`);
                 if (method === 'POST') {
-                    const r = await env.DB.prepare(`INSERT INTO phone_numbers (phone, name, active, sched_enabled, days, time_from, time_to, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-                        .bind(d.phone, d.name, d.active, d.sched_enabled, d.days, d.time_from, d.time_to, now, now).run();
+                    const r = await env.DB.prepare(`INSERT INTO phone_numbers (phone, name, active, can_override, sched_enabled, days, time_from, time_to, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                        .bind(d.phone, d.name, d.active, d.can_override, d.sched_enabled, d.days, d.time_from, d.time_to, now, now).run();
                     return json({ success: true, id: r.meta && r.meta.last_row_id }, 201);
                 }
                 if (isNaN(id)) return bad('חסר מזהה');
-                const r = await env.DB.prepare(`UPDATE phone_numbers SET phone = ?, name = ?, active = ?, sched_enabled = ?, days = ?, time_from = ?, time_to = ?, updated_at = ? WHERE id = ?`)
-                    .bind(d.phone, d.name, d.active, d.sched_enabled, d.days, d.time_from, d.time_to, now, id).run();
+                const r = await env.DB.prepare(`UPDATE phone_numbers SET phone = ?, name = ?, active = ?, can_override = ?, sched_enabled = ?, days = ?, time_from = ?, time_to = ?, updated_at = ? WHERE id = ?`)
+                    .bind(d.phone, d.name, d.active, d.can_override, d.sched_enabled, d.days, d.time_from, d.time_to, now, id).run();
                 if (!r.meta || !r.meta.changes) return json({ error: 'Not Found', message: 'המספר לא נמצא' }, 404);
                 return json({ success: true });
             }
@@ -116,7 +116,7 @@ export default async function phoneAdminHandler(request, env) {
         if (route === '/peer/api/phone/log/updates' && method === 'GET') {
             const callId = url.searchParams.get('call_id');
             if (!callId) return bad('חסר מזהה שיחה');
-            const { results } = await env.DB.prepare("SELECT created_at, student_code, student_name, exam_code, passed FROM phone_log WHERE event = 'update' AND call_id = ? ORDER BY id").bind(callId).all();
+            const { results } = await env.DB.prepare("SELECT created_at, student_code, student_name, exam_code, passed, reason FROM phone_log WHERE event = 'update' AND call_id = ? ORDER BY id").bind(callId).all();
             return json({ rows: results });
         }
 

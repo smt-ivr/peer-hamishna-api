@@ -17,7 +17,7 @@ export const REASONS = {
     error: 'תקלה בבדיקה'
 };
 
-export const DEFAULT_SETTINGS = { blocked: { action: 'hangup', folder: '', message: 'מספר הטלפון שלכם אינו מורשה לעדכן ציונים במערכת' } };
+export const DEFAULT_SETTINGS = { edit_minutes: 5, blocked: { action: 'hangup', folder: '', message: 'מספר הטלפון שלכם אינו מורשה לעדכן ציונים במערכת' } };
 
 // שלוחה בימות המשיח: /5 , /2/3 — ספרות ולוכסנים בלבד
 export const validFolder = f => /^\/?[0-9]+(\/[0-9]+)*$/.test(String(f || ''));
@@ -35,7 +35,9 @@ export function cleanSettings(raw) {
     // תמיכה במבנה הישן (lines.manager.blocked)
     const b = (raw && (raw.blocked || (raw.lines && raw.lines.manager && raw.lines.manager.blocked))) || {};
     const action = b.action === 'goto' ? 'goto' : 'hangup';
-    return { blocked: { action, folder: action === 'goto' ? String(b.folder || '').trim() : '', message: speakable(b.message ?? DEFAULT_SETTINGS.blocked.message) } };
+    const m = parseInt(raw && raw.edit_minutes, 10);
+    const edit_minutes = isNaN(m) ? DEFAULT_SETTINGS.edit_minutes : Math.min(Math.max(m, 0), 1440);   // 0 = אין שינוי עצמי
+    return { edit_minutes, blocked: { action, folder: action === 'goto' ? String(b.folder || '').trim() : '', message: speakable(b.message ?? DEFAULT_SETTINGS.blocked.message) } };
 }
 export const settingsError = s => s.blocked.action === 'goto' && !validFolder(s.blocked.folder) ? 'יש להזין שלוחה תקינה להעברה (למשל /5 או /2/3)' : null;
 
@@ -146,10 +148,10 @@ export async function phoneGate(request, env, first) {
     return { block: text(reason === 'number_hours' ? hoursCommand(ctx.entry, settings.blocked) : blockCommand(settings.blocked)), ctx };
 }
 
-export function logUpdate(env, ctx, student, examCode, passed) {
+export function logUpdate(env, ctx, student, examCode, passed, reason = 'saved') {
     return writeLog(env, {
         event: 'update', phone: ctx.phone, call_id: ctx.call_id, number_id: ctx.entry && ctx.entry.id, number_name: ctx.entry && ctx.entry.name,
-        reason: 'saved', action: 'continue', student_code: student.student_code,
+        reason, action: 'continue', student_code: student.student_code,
         student_name: `${student.first_name || ''} ${student.last_name || ''}`.trim(), exam_code: examCode, passed
     });
 }
