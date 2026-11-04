@@ -1,5 +1,6 @@
 import { getLocalTime } from './time.js';
-import { phoneGate, logUpdate, loadSettings, normalizePhone } from './phone_access.js';
+import { phoneGate, logUpdate, loadSettings, normalizePhone, validPhone, isExpired } from './phone_access.js';
+import { audit, describeChange } from './phone_audit.js';
 
 // ============================================================
 //  yemot_manager.js — קו עדכון הציונים (ימות המשיח)
@@ -12,6 +13,11 @@ import { phoneGate, logUpdate, loadSettings, normalizePhone } from './phone_acce
 //    ow  למבחן כבר יש ציון ולמתקשר יש הרשאה לשנות: 1 שינוי, 2 מבחן אחר
 //    ps  עבר / לא עבר
 //    nx  אחרי שמירה: 1 מבחן נוסף לאותו תלמיד, 2 תלמיד אחר
+//  ניהול הרשאות (0# במקום קוד תלמיד, רק למספר עם הרשאת ניהול):
+//    mm  תפריט: 1 הוספה/הארכה, 2 ביטול, 3 בדיקת מצב, 0 חזרה
+//    mp  מספר הטלפון (בשדה התלמיד נשמרת הפעולה: add/del/chk)
+//    md  תוקף ההרשאה: 1 יום, 2 שבוע, 3 חודש, 4 שנה, 5 ללא הגבלה
+//    mc  אישור ביטול
 //
 //  שינוי ציון קיים מותר רק אם:
 //    • למספר יש הרשאת "שינוי ציון קיים", או
@@ -33,10 +39,14 @@ const hex = s => [...new TextEncoder().encode(String(s || ''))].map(b => b.toStr
 const unhex = h => { try { return new TextDecoder().decode(new Uint8Array((String(h || '').match(/../g) || []).map(x => parseInt(x, 16)))); } catch (e) { return ''; } };
 
 // ---------- פקודות לימות המשיח ----------
-const ask = (n, stage, msg, ctx = {}, oneDigit = false) => {
+// digits: false = הקשה חופשית עם סולמית; true = ספרה אחת 1/2; מחרוזת = ספרה אחת מתוך הרשימה
+const ask = (n, stage, msg, ctx = {}, digits = false) => {
     const name = `p${n}_${stage}_${hex(ctx.student)}_${hex(ctx.exam)}`;
-    return text(`read=t-${msg}=${name},,${oneDigit ? '1' : ''},,,NO,,,,${oneDigit ? '12' : ''},,,,,no`);
+    const allowed = digits === true ? '12' : (digits || '');
+    return text(`read=t-${msg}=${name},,${digits ? '1' : ''},,,NO,,,,${allowed},,,,,no`);
 };
+// מספר טלפון להקראה ספרה ספרה (d-) בתוך הודעה
+const sayPhone = p => `.d-${p}.t-`;
 
 function lastStep(url) {
     let best = null;
@@ -83,11 +93,18 @@ export async function handleYemotManager(request, env) {
     if (!ctx.phone) return text('id_list_message=t-לא ניתן לעדכן ציונים ממספר חסוי&go_to_folder=hangup');
 
     const n = step ? step.n + 1 : 1;
-    const askStudent = msg => ask(n, 'st', msg);
+    const canManage = !!(ctx.entry && ctx.entry.can_manage);
+    const askStudent = msg => ask(n, 'st', msg + (canManage ? ', לניהול הרשאות טלפון הקישו 0 וסולמית' : ''));
 
     // --- תחילת שיחה ---
     if (!step) return askStudent('ברוכים הבאים למערכת עדכון המבחנים, הקישו קוד תלמיד וסולמית, או כוכבית ליציאה');
     if (step.value === '*') return step.stage === 'st' ? text('go_to_folder=hangup') : askStudent('הקישו קוד תלמיד וסולמית, או כוכבית ליציאה');
+
+    // --- ניהול הרשאות ---
+    if ((step.stage === 'st' && step.value === '0' && canManage) || step.stage.startsWith('m')) {
+        if (!canManage) return askStudent('אין לכם הרשאה לניהול, הקישו קוד תלמיד וסולמית');
+        return manage(env, ctx, step, n, askStudent);
+    }
 
     // --- תלמיד ---
     const studentCode = step.stage === 'st' ? step.value : step.student;
@@ -168,4 +185,85 @@ export async function handleYemotManager(request, env) {
     }
 
     return askStudent('הקישו קוד תלמיד וסולמית, או כוכבית ליציאה');
+}
+
+// ============================================================
+//  ניהול הרשאות בטלפון
+// ============================================================
+const MENU = 'להוספה או הארכה של הרשאה למספר הקישו 1, לביטול הרשאה של מספר הקישו 2, לבדיקת מצב של מספר הקישו 3, לחזרה לעדכון ציונים הקישו 0';
+const DURATIONS = { 1: ['יום', d => d.setUTCDate(d.getUTCDate() + 1)], 2: ['שבוע', d => d.setUTCDate(d.getUTCDate() + 7)], 3: ['חודש', d => d.setUTCMonth(d.getUTCMonth() + 1)],
+                    4: ['שנה', d => d.setUTCFullYear(d.getUTCFullYear() + 1)], 5: ['ללא הגבלת זמן', null] };
+function addTime(local, fn) {
+    const d = new Date(local.replace(' ', 'T') + 'Z'); fn(d);
+    return d.toISOString().slice(0, 16).replace('T', ' ');
+}
+const COLS = 'id, phone, name, active, can_override, can_manage, valid_until, sched_enabled, days, time_from, time_to';
+
+async function manage(env, ctx, step, n, askStudent) {
+    const menu = (msg = '') => ask(n, 'mm', `${msg}${msg ? ', ' : 'ניהול הרשאות טלפון, '}${MENU}`, {}, '1230');
+    const askPhone = (action, msg) => ask(n, 'mp', msg, { student: action });
+    const who = { source: 'phone', actor: ctx.entry.name, actor_phone: ctx.phone };
+
+    if (step.stage === 'st') return menu();
+
+    if (step.stage === 'mm') {
+        if (step.value === '0') return askStudent('הקישו קוד תלמיד וסולמית, או כוכבית ליציאה');
+        const action = { 1: 'add', 2: 'del', 3: 'chk' }[step.value];
+        if (!action) return menu('הקשה שגויה');
+        return askPhone(action, 'הקישו את מספר הטלפון וסולמית');
+    }
+
+    const action = step.student;
+    const target = normalizePhone(step.stage === 'mp' ? step.value : step.exam);
+    if (!validPhone(target)) return askPhone(action, 'מספר לא תקין, הקישו את מספר הטלפון שנית וסולמית');
+    const entry = await env.DB.prepare(`SELECT ${COLS} FROM phone_numbers WHERE phone = ?`).bind(target).first();
+    const now = getLocalTime();
+
+    // בדיקת מצב
+    if (action === 'chk') {
+        let st;
+        if (!entry) st = 'לא נמצא ברשימה';
+        else if (!entry.active) st = 'מושבת';
+        else if (isExpired(entry, now)) st = 'תוקף ההרשאה שלו הסתיים';
+        else if (!entry.valid_until) st = 'פעיל ללא הגבלת זמן';
+        else {
+            const left = (Date.parse(entry.valid_until.replace(' ', 'T') + 'Z') - Date.parse(now.replace(' ', 'T') + 'Z')) / 86400000;
+            st = left < 1 ? `פעיל עד היום בשעה.z-T${entry.valid_until.slice(11, 16)}.t-` : `פעיל, בתוקף עוד ${Math.ceil(left)} ימים`;
+        }
+        return menu(`המספר${sayPhone(target)}${st}`);
+    }
+
+    // לא משנים בטלפון את המספר של עצמכם או מספר עם הרשאות מיוחדות
+    if (target === ctx.phone) return menu('לא ניתן לשנות בטלפון את ההרשאה של המספר שלכם');
+    if (entry && (entry.can_manage || entry.can_override)) return menu('למספר זה יש הרשאות מיוחדות, ניתן לשנות אותו רק דרך האתר');
+
+    if (action === 'add') {
+        if (step.stage === 'mp') return ask(n, 'md', `המספר${sayPhone(target)}${entry ? 'כבר ברשימה, ' : ''}לבחירת תוקף ההרשאה, ליום הקישו 1, לשבוע 2, לחודש 3, לשנה 4, ללא הגבלת זמן 5`, { student: 'add', exam: target }, '12345');
+        const dur = DURATIONS[step.value];
+        if (!dur) return ask(n, 'md', 'הקשה שגויה, ליום הקישו 1, לשבוע 2, לחודש 3, לשנה 4, ללא הגבלת זמן 5', { student: 'add', exam: target }, '12345');
+        const until = dur[1] ? addTime(now, dur[1]) : null;
+        if (entry) {
+            const after = { ...entry, active: 1, valid_until: until };
+            await env.DB.prepare('UPDATE phone_numbers SET active = 1, valid_until = ?, updated_at = ? WHERE id = ?').bind(until, now, entry.id).run();
+            await audit(env, { ...who, action: 'extend', phone: target, name: entry.name, details: describeChange(entry, after) });
+        } else {
+            const name = `נוסף בטלפון ע"י ${ctx.entry.name}`;
+            const d = { phone: target, name, active: 1, can_override: 0, can_manage: 0, valid_until: until, sched_enabled: 0 };
+            await env.DB.prepare(`INSERT INTO phone_numbers (phone, name, active, can_override, can_manage, valid_until, sched_enabled, created_at, updated_at) VALUES (?, ?, 1, 0, 0, ?, 0, ?, ?)`)
+                .bind(target, name, until, now, now).run();
+            await audit(env, { ...who, action: 'add', phone: target, name, details: describeChange(null, d) });
+        }
+        return menu(`ההרשאה למספר${sayPhone(target)}נשמרה ${dur[1] ? 'ל' : ''}${dur[0]}`);
+    }
+
+    if (action === 'del') {
+        if (!entry) return menu(`המספר${sayPhone(target)}לא נמצא ברשימה`);
+        if (!entry.active) return menu(`ההרשאה למספר${sayPhone(target)}כבר מבוטלת`);
+        if (step.stage === 'mp') return ask(n, 'mc', `לביטול ההרשאה של ${entry.name}, מספר${sayPhone(target)}הקישו 1, לחזרה הקישו 2`, { student: 'del', exam: target }, true);
+        if (step.value !== '1') return menu();
+        await env.DB.prepare('UPDATE phone_numbers SET active = 0, updated_at = ? WHERE id = ?').bind(now, entry.id).run();
+        await audit(env, { ...who, action: 'disable', phone: target, name: entry.name, details: 'מצב: פעיל ← מושבת' });
+        return menu(`ההרשאה למספר${sayPhone(target)}בוטלה`);
+    }
+    return menu();
 }
