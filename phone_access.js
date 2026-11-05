@@ -14,6 +14,7 @@ export const REASONS = {
     not_listed: 'המספר לא ברשימה',
     inactive: 'המספר מושבת',
     expired: 'תוקף ההרשאה הסתיים',
+    bad_pin: 'סיסמה שגויה',
     number_hours: 'מחוץ לשעות של המספר',
     error: 'תקלה בבדיקה'
 };
@@ -41,6 +42,19 @@ export function cleanSettings(raw) {
     return { edit_minutes, blocked: { action, folder: action === 'goto' ? String(b.folder || '').trim() : '', message: speakable(b.message ?? DEFAULT_SETTINGS.blocked.message) } };
 }
 export const settingsError = s => s.blocked.action === 'goto' && !validFolder(s.blocked.folder) ? 'יש להזין שלוחה תקינה להעברה (למשל /5 או /2/3)' : null;
+
+// ---------- סיסמה לטלפון (נשמרת כ-hash עם salt, לא ניתנת לשחזור) ----------
+export const validPin = p => /^\d{4,8}$/.test(String(p || ''));
+const sha = async s => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))].map(b => b.toString(16).padStart(2, '0')).join('');
+export async function hashPin(pin) {
+    const salt = [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, '0')).join('');
+    return `${salt}:${await sha(salt + ':' + pin)}`;
+}
+export async function checkPin(pin, stored) {
+    const [salt, h] = String(stored || '').split(':');
+    if (!salt || !h || !validPin(pin)) return false;
+    return (await sha(salt + ':' + pin)) === h;
+}
 
 // ---------- זמן ----------
 export function nowParts(local = getLocalTime()) {
