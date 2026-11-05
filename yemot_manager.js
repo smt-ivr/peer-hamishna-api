@@ -1,5 +1,5 @@
 import { getLocalTime } from './time.js';
-import { phoneGate, logUpdate, loadSettings, normalizePhone, validPhone, isExpired } from './phone_access.js';
+import { phoneGate, logUpdate, loadSettings, normalizePhone, validPhone, isExpired, checkPin, writeLog } from './phone_access.js';
 import { audit, describeChange } from './phone_audit.js';
 
 // ============================================================
@@ -8,6 +8,7 @@ import { audit, describeChange } from './phone_audit.js';
 //  כל שאלה נשמרת בפרמטר ששמו מכיל את השלב ואת ההקשר:  p{מספר}_{שלב}_{תלמיד}_{מבחן}
 //  ימות המשיח מחזיר את כל הפרמטרים שנאספו; אנחנו קוראים רק את האחרון (המספר הגבוה).
 //  שלבים:
+//    pw  סיסמה (רק למספר שהוגדרה לו סיסמה, ורק אחרי שעבר את בדיקת ההרשאה/שעות/תוקף). 3 ניסיונות
 //    st  קוד תלמיד
 //    ex  קוד מבחן (לתלמיד)
 //    ow  למבחן כבר יש ציון ולמתקשר יש הרשאה לשנות: 1 שינוי, 2 מבחן אחר
@@ -96,8 +97,26 @@ export async function handleYemotManager(request, env) {
     const canManage = !!(ctx.entry && ctx.entry.can_manage);
     const askStudent = msg => ask(n, 'st', msg + (canManage ? ', לניהול הרשאות טלפון הקישו 0 וסולמית' : ''));
 
+    // --- סיסמה: נבדקת בכל שלב (אחת מהסיסמאות שהוקשו בשיחה חייבת להיות נכונה) ---
+    const WELCOME = 'ברוכים הבאים למערכת עדכון המבחנים, הקישו קוד תלמיד וסולמית, או כוכבית ליציאה';
+    if (ctx.entry && ctx.entry.pin_hash) {
+        const tries = [...url.searchParams.entries()].filter(([k]) => /^p\d+_pw_/.test(k)).map(([, v]) => String(v || '').trim());
+        let ok = false;
+        for (const t of tries) if (await checkPin(t, ctx.entry.pin_hash)) { ok = true; break; }
+        if (!ok) {
+            if (!step) return ask(n, 'pw', 'הקישו סיסמה וסולמית');
+            if (step.stage === 'pw' && step.value === '*') return text('go_to_folder=hangup');
+            if (tries.length >= 3) {
+                await writeLog(env, { event: 'call', phone: ctx.phone, call_id: ctx.call_id, number_id: ctx.entry.id, number_name: ctx.entry.name, reason: 'bad_pin', action: 'hangup' });
+                return text('id_list_message=t-הסיסמה שגויה, השיחה תסתיים&go_to_folder=hangup');
+            }
+            return ask(n, 'pw', 'הסיסמה שגויה, הקישו סיסמה שנית וסולמית');
+        }
+        if (step && step.stage === 'pw') return askStudent(WELCOME);
+    }
+
     // --- תחילת שיחה ---
-    if (!step) return askStudent('ברוכים הבאים למערכת עדכון המבחנים, הקישו קוד תלמיד וסולמית, או כוכבית ליציאה');
+    if (!step) return askStudent(WELCOME);
     if (step.value === '*') return step.stage === 'st' ? text('go_to_folder=hangup') : askStudent('הקישו קוד תלמיד וסולמית, או כוכבית ליציאה');
 
     // --- ניהול הרשאות ---

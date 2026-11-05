@@ -1,6 +1,6 @@
 import { getLocalTime } from './time.js';
 import { identify, SUPER_ADMIN } from './admin.js';
-import { REASONS, cleanSettings, settingsError, loadSettings, normalizePhone, validPhone, untilOf } from './phone_access.js';
+import { REASONS, cleanSettings, settingsError, loadSettings, normalizePhone, validPhone, untilOf, validPin, hashPin } from './phone_access.js';
 import { audit, describeChange } from './phone_audit.js';
 
 // ============================================================
@@ -36,8 +36,10 @@ function validateNumber(b) {
     if (sched && !days.length) return { message: 'יש לבחור לפחות יום אחד' };
     if (!HM.test(from) || !HM.test(to)) return { message: 'שעה לא תקינה' };
     if (until && !/^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$/.test(until)) return { message: 'תאריך תפוגה לא תקין' };
+    const pin = String(b.pin ?? '').trim();
+    if (pin && !validPin(pin)) return { message: 'הסיסמה חייבת להיות 4 עד 8 ספרות' };
     return { data: { phone, name, active: b.active === false || b.active === 0 ? 0 : 1, can_override: b.can_override ? 1 : 0, can_manage: b.can_manage ? 1 : 0,
-        valid_until: until ? untilOf(until) : null, sched_enabled: sched ? 1 : 0, days: days.join(','), time_from: from, time_to: to } };
+        pin, pin_clear: !!b.pin_clear, valid_until: until ? untilOf(until) : null, sched_enabled: sched ? 1 : 0, days: days.join(','), time_from: from, time_to: to } };
 }
 
 export default async function phoneAdminHandler(request, env) {
@@ -55,7 +57,7 @@ export default async function phoneAdminHandler(request, env) {
             const today = getLocalTime().slice(0, 10);
             const [settings, numbers, stats, past] = await Promise.all([
                 loadSettings(env),
-                env.DB.prepare(`SELECT ${COLS.split(', ').map(c => 'n.' + c).join(', ')},
+                env.DB.prepare(`SELECT ${COLS.split(', ').map(c => 'n.' + c).join(', ')}, (n.pin_hash IS NOT NULL) AS has_pin,
                         (SELECT MAX(created_at) FROM phone_log l WHERE l.phone = n.phone AND l.event = 'call') AS last_call,
                         (SELECT COUNT(*) FROM phone_log l WHERE l.phone = n.phone AND l.event = 'update') AS updates
                     FROM phone_numbers n ORDER BY n.name COLLATE NOCASE`).all(),
@@ -96,21 +98,25 @@ export default async function phoneAdminHandler(request, env) {
                 const v = validateNumber(await request.json().catch(() => ({})));
                 if (!v.data) return bad(v.message);
                 const d = v.data, now = getLocalTime();
+                const pinHash = d.pin ? await hashPin(d.pin) : null;
                 const dup = await env.DB.prepare('SELECT id, name FROM phone_numbers WHERE phone = ?').bind(d.phone).first();
                 if (dup && (method === 'POST' || dup.id !== id)) return bad(`המספר כבר ברשימה (${dup.name})`);
                 if (method === 'POST') {
-                    const r = await env.DB.prepare(`INSERT INTO phone_numbers (phone, name, active, can_override, can_manage, valid_until, sched_enabled, days, time_from, time_to, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-                        .bind(d.phone, d.name, d.active, d.can_override, d.can_manage, d.valid_until, d.sched_enabled, d.days, d.time_from, d.time_to, now, now).run();
-                    await log('add', d, describeChange(null, d));
+                    const r = await env.DB.prepare(`INSERT INTO phone_numbers (phone, name, active, can_override, can_manage, valid_until, sched_enabled, days, time_from, time_to, pin_hash, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                        .bind(d.phone, d.name, d.active, d.can_override, d.can_manage, d.valid_until, d.sched_enabled, d.days, d.time_from, d.time_to, pinHash, now, now).run();
+                    await log('add', d, [describeChange(null, d), pinHash ? 'סיסמה: נקבעה' : ''].filter(Boolean).join(' · '));
                     return json({ success: true, id: r.meta && r.meta.last_row_id }, 201);
                 }
                 if (isNaN(id)) return bad('חסר מזהה');
-                const old = await env.DB.prepare(`SELECT ${COLS} FROM phone_numbers WHERE id = ?`).bind(id).first();
+                const old = await env.DB.prepare(`SELECT ${COLS}, pin_hash FROM phone_numbers WHERE id = ?`).bind(id).first();
                 if (!old) return json({ error: 'Not Found', message: 'המספר לא נמצא' }, 404);
-                await env.DB.prepare(`UPDATE phone_numbers SET phone = ?, name = ?, active = ?, can_override = ?, can_manage = ?, valid_until = ?, sched_enabled = ?, days = ?, time_from = ?, time_to = ?, updated_at = ? WHERE id = ?`)
-                    .bind(d.phone, d.name, d.active, d.can_override, d.can_manage, d.valid_until, d.sched_enabled, d.days, d.time_from, d.time_to, now, id).run();
-                const details = describeChange(old, d);
+                // סיסמה: חדשה = מחליפה; "הסר" = מוחקת; ריק = נשארת כמו שהיא
+                const newPin = pinHash || (d.pin_clear ? null : old.pin_hash);
+                const pinNote = pinHash ? (old.pin_hash ? 'סיסמה: שונתה' : 'סיסמה: נקבעה') : (d.pin_clear && old.pin_hash ? 'סיסמה: הוסרה' : '');
+                await env.DB.prepare(`UPDATE phone_numbers SET phone = ?, name = ?, active = ?, can_override = ?, can_manage = ?, valid_until = ?, sched_enabled = ?, days = ?, time_from = ?, time_to = ?, pin_hash = ?, updated_at = ? WHERE id = ?`)
+                    .bind(d.phone, d.name, d.active, d.can_override, d.can_manage, d.valid_until, d.sched_enabled, d.days, d.time_from, d.time_to, newPin, now, id).run();
+                const details = [describeChange(old, d), pinNote].filter(Boolean).join(' · ');
                 const onlyActive = details && details.startsWith('מצב:') && !details.includes(' · ');
                 if (details) await log(onlyActive ? (d.active ? 'enable' : 'disable') : 'edit', d, details);
                 return json({ success: true });
