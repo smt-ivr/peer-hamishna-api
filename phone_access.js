@@ -19,7 +19,8 @@ export const REASONS = {
     error: 'תקלה בבדיקה'
 };
 
-export const DEFAULT_SETTINGS = { edit_minutes: 5, blocked: { action: 'hangup', folder: '', message: 'מספר הטלפון שלכם אינו מורשה לעדכן ציונים במערכת' } };
+export const DEFAULT_STUDENT = { enabled: true, require_phone: true, closed_message: 'האזור האישי סגור כעת, נסו שוב מאוחר יותר' };
+export const DEFAULT_SETTINGS = { edit_minutes: 5, student: DEFAULT_STUDENT, blocked: { action: 'hangup', folder: '', message: 'מספר הטלפון שלכם אינו מורשה לעדכן ציונים במערכת' } };
 
 // שלוחה בימות המשיח: /5 , /2/3 — ספרות ולוכסנים בלבד
 export const validFolder = f => /^\/?[0-9]+(\/[0-9]+)*$/.test(String(f || ''));
@@ -39,7 +40,13 @@ export function cleanSettings(raw) {
     const action = b.action === 'goto' ? 'goto' : 'hangup';
     const m = parseInt(raw && raw.edit_minutes, 10);
     const edit_minutes = isNaN(m) ? DEFAULT_SETTINGS.edit_minutes : Math.min(Math.max(m, 0), 1440);   // 0 = אין שינוי עצמי
-    return { edit_minutes, blocked: { action, folder: action === 'goto' ? String(b.folder || '').trim() : '', message: speakable(b.message ?? DEFAULT_SETTINGS.blocked.message) } };
+    const st = (raw && raw.student) || {};
+    const student = {
+        enabled: st.enabled === undefined ? true : !!st.enabled,
+        require_phone: st.require_phone === undefined ? true : !!st.require_phone,
+        closed_message: speakable(st.closed_message ?? DEFAULT_STUDENT.closed_message)
+    };
+    return { edit_minutes, student, blocked: { action, folder: action === 'goto' ? String(b.folder || '').trim() : '', message: speakable(b.message ?? DEFAULT_SETTINGS.blocked.message) } };
 }
 export const settingsError = s => s.blocked.action === 'goto' && !validFolder(s.blocked.folder) ? 'יש להזין שלוחה תקינה להעברה (למשל /5 או /2/3)' : null;
 
@@ -57,6 +64,21 @@ export async function checkPin(pin, stored) {
 }
 
 // ---------- זמן ----------
+// "לפני 3 שעות" / "לפני יומיים" / "לפני שבועיים" ... (להקראה)
+export function agoText(ts, now = getLocalTime()) {
+    const a = Date.parse(String(ts || '').replace(' ', 'T') + 'Z'), b = Date.parse(now.replace(' ', 'T') + 'Z');
+    if (isNaN(a)) return '';
+    const m = Math.max(0, Math.floor((b - a) / 60000));
+    const say = (v, one, two, many) => (v === 1 ? `לפני ${one}` : v === 2 ? `לפני ${two}` : `לפני ${v} ${many}`);
+    if (m < 1) return 'לפני פחות מדקה';
+    if (m < 60) return say(m, 'דקה', 'שתי דקות', 'דקות');
+    const h = Math.floor(m / 60); if (h < 24) return say(h, 'שעה', 'שעתיים', 'שעות');
+    const d = Math.floor(h / 24); if (d < 7) return say(d, 'יום', 'יומיים', 'ימים');
+    if (d < 30) return say(Math.floor(d / 7), 'שבוע', 'שבועיים', 'שבועות');
+    if (d < 365) return say(Math.max(1, Math.floor(d / 30)), 'חודש', 'חודשיים', 'חודשים');
+    return say(Math.floor(d / 365), 'שנה', 'שנתיים', 'שנים');
+}
+
 export function nowParts(local = getLocalTime()) {
     const date = local.slice(0, 10);
     return { local, date, hm: local.slice(11, 16), day: new Date(date + 'T00:00:00Z').getUTCDay() };   // 0 = ראשון
@@ -127,8 +149,8 @@ export async function loadSettings(env) {
 export async function writeLog(env, row) {
     try {
         await env.DB.prepare(`INSERT INTO phone_log (created_at, call_id, line, event, phone, number_id, number_name, reason, action, student_code, student_name, exam_code, passed)
-            VALUES (?, ?, 'manager', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-            getLocalTime(), row.call_id || null, row.event, row.phone || null, row.number_id ?? null, row.number_name || null,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+            getLocalTime(), row.call_id || null, row.line || 'manager', row.event, row.phone || null, row.number_id ?? null, row.number_name || null,
             row.reason || null, row.action || null, row.student_code || null, row.student_name || null, row.exam_code || null, row.passed ?? null
         ).run();
         if (Math.random() < 0.01) await env.DB.prepare("DELETE FROM phone_log WHERE created_at < datetime('now', '-365 days')").run();
