@@ -1,5 +1,5 @@
 import { getLocalTime } from './time.js';
-import { loadSettings, normalizePhone, writeLog, agoText } from './phone_access.js';
+import { loadSettings, normalizePhone, writeLog, agoText, decide, nowParts } from './phone_access.js';
 
 // ============================================================
 //  yemot_students.js — האזור האישי לתלמיד (ימות המשיח)
@@ -8,6 +8,7 @@ import { loadSettings, normalizePhone, writeLog, agoText } from './phone_access.
 //  אחרי הכניסה: "שלום <שם>, העדכון האחרון בוצע לפני ..." ותפריט:
 //    1 פירוט (נבחן / עבר / לא עבר / מלגה)   2 בדיקה לפי קוד מבחן   3 תלמיד אחר   * יציאה
 //  כל פעולה חוזרת לתפריט. הכל נרשם ביומן (phone_log, line = 'student').
+//  מספר עם הרשאת "ניהול בטלפון" (פעיל, בתוקף ובשעות שלו) יכול לשמוע כל תלמיד.
 //
 //  שם הפרמטר שומר את השלב וההקשר:  s{מספר}_{שלב}_{תלמיד hex}_{ניסיונות שגויים}
 //    sc  קוד תלמיד      mn  תפריט      ex  קוד מבחן
@@ -78,8 +79,12 @@ export async function handleYemotStudents(request, env) {
 
     // --- זיהוי התלמיד (נבדק מחדש בכל שלב) ---
     const code = step.stage === 'sc' ? step.value : step.student;
-    const student = code ? await env.DB.prepare('SELECT * FROM students WHERE student_code = ? AND is_deleted = 0').bind(code).first() : null;
-    const allowed = student && (!settings.require_phone || phonesOf(student).includes(phone));
+    const [student, mgrEntry] = await Promise.all([
+        code ? env.DB.prepare('SELECT * FROM students WHERE student_code = ? AND is_deleted = 0').bind(code).first() : null,
+        phone ? env.DB.prepare('SELECT * FROM phone_numbers WHERE phone = ? AND can_manage = 1').bind(phone).first().catch(() => null) : null
+    ]);
+    const manager = !!(mgrEntry && decide(phone, mgrEntry, nowParts()) === 'ok_listed');   // מנהל: פעיל, בתוקף, בשעות שלו
+    const allowed = student && (manager || !settings.require_phone || phonesOf(student).includes(phone));
 
     if (!allowed) {
         if (step.stage !== 'sc') return askCode('הקישו קוד תלמיד וסולמית');   // הקשר לא תקף — מתחילים מחדש
@@ -93,14 +98,17 @@ export async function handleYemotStudents(request, env) {
     }
 
     const name = fullName(student);
+    // מנהל שומע בגוף שלישי, תלמיד בגוף שני
+    const W = manager ? { notYet: 'עדיין לא נבחן באף מבחן', tested: 'בסך הכל נבחן ב', passed: 'עבר', failed: 'ולא עבר', reward: 'הסכום שנצבר לזכותו', inExamNot: 'עדיין לא נבחן', ok: 'עבר', bad: 'לא עבר' }
+                      : { notYet: 'עדיין לא נבחנת באף מבחן', tested: 'בסך הכל נבחנת ב', passed: 'עברת', failed: 'ולא עברת', reward: 'הסכום שנצבר לזכותך', inExamNot: 'עדיין לא נבחנת', ok: 'עברת', bad: 'לא עברת' };
     const menu = msg => ask(n, 'mn', msg ? `${msg}, ${MENU}` : MENU, code, 0, '123');
     const st = () => summary(env, code);
 
     // נכנס עכשיו: שלום + העדכון האחרון + תפריט
     if (step.stage === 'sc') {
-        await log({ event: 'access', reason: 'ok', action: 'continue', student_code: code, student_name: name });
+        await log({ event: 'access', reason: manager ? 'ok_manager' : 'ok', action: 'continue', student_code: code, student_name: name, number_name: manager ? mgrEntry.name : null });
         const s = await st();
-        return menu(`שלום ${name}, ${s.last ? `העדכון האחרון בוצע ${agoText(s.last)}` : 'עדיין לא נבחנת באף מבחן'}`);
+        return menu(`${manager ? 'כניסת מנהל, התלמיד' : 'שלום'} ${name}, ${s.last ? `העדכון האחרון בוצע ${agoText(s.last)}` : W.notYet}`);
     }
 
     if (step.stage === 'mn') {
@@ -110,12 +118,12 @@ export async function handleYemotStudents(request, env) {
         // פירוט
         const s = await st();
         await log({ event: 'view', reason: 'summary', student_code: code, student_name: name });
-        if (!s.total) return menu('עדיין לא נבחנת באף מבחן');
+        if (!s.total) return menu(W.notYet);
         const shekels = Math.floor(s.reward), agorot = Math.round((s.reward - shekels) * 100);
         const failed = s.total - s.passed;
-        const parts = [`בסך הכל נבחנת ב.n-${s.total}.t-מבחנים, עברת.n-${s.passed}.t-מבחנים`];
-        if (failed > 0) parts.push(`.t-ולא עברת.n-${failed}.t-מבחנים`);
-        parts.push(`.t-, הסכום שנצבר לזכותך.n-${shekels}.t-שקלים`);
+        const parts = [`${W.tested}.n-${s.total}.t-מבחנים, ${W.passed}.n-${s.passed}.t-מבחנים`];
+        if (failed > 0) parts.push(`.t-${W.failed}.n-${failed}.t-מבחנים`);
+        parts.push(`.t-, ${W.reward}.n-${shekels}.t-שקלים`);
         if (agorot > 0) parts.push(`.t-ו.n-${agorot}.t-אגורות`);
         parts.push(`.t-, העדכון האחרון בוצע ${agoText(s.last)}`);
         return menu(parts.join(''));
@@ -131,8 +139,8 @@ export async function handleYemotStudents(request, env) {
         if (!exam) return menu(`מבחן ${examCode} לא נמצא`);
         const row = await env.DB.prepare('SELECT passed, updated_at FROM student_exams WHERE student_code = ? AND exam_code = ?').bind(code, examCode).first();
         await log({ event: 'view', reason: 'exam', student_code: code, student_name: name, exam_code: examCode, passed: row ? row.passed : null });
-        if (!row) return menu(`במבחן ${examCode} עדיין לא נבחנת`);
-        return menu(`במבחן ${examCode} ${row.passed === 1 ? 'עברת' : 'לא עברת'}, העדכון בוצע ${agoText(row.updated_at)}`);
+        if (!row) return menu(`במבחן ${examCode} ${W.inExamNot}`);
+        return menu(`במבחן ${examCode} ${row.passed === 1 ? W.ok : W.bad}, העדכון בוצע ${agoText(row.updated_at)}`);
     }
 
     return askCode('הקישו קוד תלמיד וסולמית');
