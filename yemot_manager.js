@@ -19,6 +19,8 @@ import { audit, describeChange } from './phone_audit.js';
 //    mp  מספר הטלפון (בשדה התלמיד נשמרת הפעולה: add/del/chk)
 //    md  תוקף ההרשאה: 1 יום, 2 שבוע, 3 חודש, 4 שנה, 5 ללא הגבלה
 //    mc  אישור ביטול
+//    ms  קוד תלמיד לניהול הטלפונים שלו     mz  תפריט טלפוני התלמיד: 1 שמיעה, 2 הוספה, 3 הסרה, 0 חזרה
+//    ma  טלפון להוספה לתלמיד              mr  בחירת טלפון להסרה
 //
 //  שינוי ציון קיים מותר רק אם:
 //    • למספר יש הרשאת "שינוי ציון קיים", או
@@ -209,7 +211,7 @@ export async function handleYemotManager(request, env) {
 // ============================================================
 //  ניהול הרשאות בטלפון
 // ============================================================
-const MENU = 'להוספה או הארכה של הרשאה למספר הקישו 1, לביטול הרשאה של מספר הקישו 2, לבדיקת מצב של מספר הקישו 3, לחזרה לעדכון ציונים הקישו 0';
+const MENU = 'להוספה או הארכה של הרשאה למספר הקישו 1, לביטול הרשאה של מספר הקישו 2, לבדיקת מצב של מספר הקישו 3, לניהול טלפונים של תלמיד הקישו 4, לחזרה לעדכון ציונים הקישו 0';
 const DURATIONS = { 1: ['יום', d => d.setUTCDate(d.getUTCDate() + 1)], 2: ['שבוע', d => d.setUTCDate(d.getUTCDate() + 7)], 3: ['חודש', d => d.setUTCMonth(d.getUTCMonth() + 1)],
                     4: ['שנה', d => d.setUTCFullYear(d.getUTCFullYear() + 1)], 5: ['ללא הגבלת זמן', null] };
 function addTime(local, fn) {
@@ -219,7 +221,7 @@ function addTime(local, fn) {
 const COLS = 'id, phone, name, active, can_override, can_manage, valid_until, sched_enabled, days, time_from, time_to';
 
 async function manage(env, ctx, step, n, askStudent) {
-    const menu = (msg = '') => ask(n, 'mm', `${msg}${msg ? ', ' : 'ניהול הרשאות טלפון, '}${MENU}`, {}, '1230');
+    const menu = (msg = '') => ask(n, 'mm', `${msg}${msg ? ', ' : 'ניהול הרשאות טלפון, '}${MENU}`, {}, '12340');
     const askPhone = (action, msg) => ask(n, 'mp', msg, { student: action });
     const who = { source: 'phone', actor: ctx.entry.name, actor_phone: ctx.phone };
 
@@ -227,10 +229,13 @@ async function manage(env, ctx, step, n, askStudent) {
 
     if (step.stage === 'mm') {
         if (step.value === '0') return askStudent('הקישו קוד תלמיד וסולמית, או כוכבית ליציאה');
+        if (step.value === '4') return ask(n, 'ms', 'הקישו קוד תלמיד וסולמית', { student: 'sp' });
         const action = { 1: 'add', 2: 'del', 3: 'chk' }[step.value];
         if (!action) return menu('הקשה שגויה');
         return askPhone(action, 'הקישו את מספר הטלפון וסולמית');
     }
+
+    if (['ms', 'mz', 'ma', 'mr'].includes(step.stage)) return studentPhones(env, step, n, menu, who);
 
     const action = step.student;
     const target = normalizePhone(step.stage === 'mp' ? step.value : step.exam);
@@ -283,6 +288,58 @@ async function manage(env, ctx, step, n, askStudent) {
         await env.DB.prepare('UPDATE phone_numbers SET active = 0, updated_at = ? WHERE id = ?').bind(now, entry.id).run();
         await audit(env, { ...who, action: 'disable', phone: target, name: entry.name, details: 'מצב: פעיל ← מושבת' });
         return menu(`ההרשאה למספר${sayPhone(target)}בוטלה`);
+    }
+    return menu();
+}
+
+// ============================================================
+//  ניהול הטלפונים של תלמיד (מתוך תפריט הניהול, 4)
+// ============================================================
+const stuPhones = s => { try { const p = typeof s.phones === 'string' ? JSON.parse(s.phones) : s.phones; return (Array.isArray(p) ? p : []).map(normalizePhone).filter(Boolean); } catch (e) { return []; } };
+const listSpoken = list => list.map((p, i) => `טלפון ${i + 1}${sayPhone(p)}`).join('');
+
+async function studentPhones(env, step, n, menu, who) {
+    const code = step.stage === 'ms' ? step.value : step.exam;
+    const student = code ? await env.DB.prepare('SELECT * FROM students WHERE student_code = ? AND is_deleted = 0').bind(code).first() : null;
+    if (!student) return ask(n, 'ms', 'קוד תלמיד שגוי, הקישו קוד תלמיד שנית וסולמית', { student: 'sp' });
+    const name = fullName(student), phones = stuPhones(student);
+    const sub = (msg = '') => ask(n, 'mz', `${msg}${msg ? ', ' : ''}${name}, ${phones.length ? `רשומים ${phones.length} טלפונים` : 'אין טלפונים רשומים'}, לשמיעת הטלפונים הקישו 1, להוספת טלפון הקישו 2, להסרת טלפון הקישו 3, לחזרה לתפריט הניהול הקישו 0`,
+        { student: 'sp', exam: code }, '1230');
+    const save = async (list, action, ph, details) => {
+        await env.DB.prepare('UPDATE students SET phones = ? WHERE student_code = ?').bind(JSON.stringify(list), code).run();
+        await audit(env, { ...who, action, phone: ph, name: `${name} (${code})`, details });
+        phones.splice(0, phones.length, ...list);
+    };
+
+    if (step.stage === 'ms') return sub();
+    if (step.stage === 'mz') {
+        if (step.value === '0') return menu();
+        if (step.value === '1') return sub(phones.length ? listSpoken(phones) : 'אין טלפונים רשומים');
+        if (step.value === '2') {
+            if (phones.length >= 5) return sub('לתלמיד כבר רשומים 5 טלפונים, הסירו טלפון לפני הוספה');
+            return ask(n, 'ma', 'הקישו את מספר הטלפון להוספה וסולמית', { student: 'sp', exam: code });
+        }
+        if (step.value === '3') {
+            if (!phones.length) return sub('אין טלפונים להסרה');
+            const digits = phones.map((_, i) => String(i + 1)).join('');
+            return ask(n, 'mr', `${phones.map((p, i) => `להסרת${sayPhone(p)}הקישו ${i + 1}`).join(', ')}, לחזרה הקישו 0`, { student: 'sp', exam: code }, digits + '0');
+        }
+        return sub('הקשה שגויה');
+    }
+    if (step.stage === 'ma') {
+        const p = normalizePhone(step.value);
+        if (!validPhone(p)) return ask(n, 'ma', 'מספר לא תקין, הקישו את מספר הטלפון שנית וסולמית', { student: 'sp', exam: code });
+        if (phones.includes(p)) return sub(`המספר${sayPhone(p)}כבר רשום לתלמיד`);
+        if (phones.length >= 5) return sub('לתלמיד כבר רשומים 5 טלפונים');
+        await save([...phones, p], 'student_phone_add', p, `טלפון נוסף לתלמיד: ${p}`);
+        return sub(`המספר${sayPhone(p)}נוסף`);
+    }
+    if (step.stage === 'mr') {
+        const i = parseInt(step.value, 10) - 1;
+        if (step.value === '0' || !(i >= 0 && i < phones.length)) return sub();
+        const p = phones[i];
+        await save(phones.filter((_, k) => k !== i), 'student_phone_remove', p, `טלפון הוסר מהתלמיד: ${p}`);
+        return sub(`המספר${sayPhone(p)}הוסר`);
     }
     return menu();
 }

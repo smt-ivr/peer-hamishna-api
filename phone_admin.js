@@ -69,7 +69,7 @@ export default async function phoneAdminHandler(request, env) {
                     FROM student_exams WHERE update_source = 'phone' AND source_identifier IS NOT NULL AND source_identifier != ''
                     GROUP BY source_identifier ORDER BY updates DESC LIMIT 20`).all(),
                 env.DB.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN phones IS NOT NULL AND phones NOT IN ('', '[]', 'null') THEN 1 ELSE 0 END) AS with_phone
-                    FROM students WHERE is_deleted = 0`).first()
+                    FROM students WHERE is_deleted = 0`).first().catch(() => null)
             ]);
             const listed = new Set(numbers.results.map(n => n.phone));
             const suggestions = past.results.map(p => ({ ...p, phone: normalizePhone(p.phone) })).filter(p => validPhone(p.phone) && !listed.has(p.phone));
@@ -143,7 +143,7 @@ export default async function phoneAdminHandler(request, env) {
             const q = (url.searchParams.get('q') || '').trim();
             const beforeId = parseInt(url.searchParams.get('before_id'), 10);
             const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit'), 10) || 100, 1), 300);
-            const OK = student ? "l.reason IN ('ok', 'ok_open', 'summary', 'exam')" : "l.reason LIKE 'ok_%'";
+            const OK = student ? "l.reason IN ('ok', 'ok_manager', 'ok_open', 'summary', 'exam')" : "l.reason LIKE 'ok_%'";
             if (result === 'allowed') where.push(OK);
             if (result === 'blocked') where.push(`NOT (${OK})`);
             if (q) { const p = normalizePhone(q); where.push("(IFNULL(l.number_name, '') LIKE ? OR IFNULL(l.student_name, '') LIKE ? OR IFNULL(l.student_code, '') = ? OR l.phone LIKE ?)"); args.push(`%${q}%`, `%${q}%`, q, `%${p || q}%`); }
