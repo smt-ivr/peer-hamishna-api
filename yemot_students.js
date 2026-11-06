@@ -1,94 +1,139 @@
+import { getLocalTime } from './time.js';
+import { loadSettings, normalizePhone, writeLog, agoText } from './phone_access.js';
+
+// ============================================================
+//  yemot_students.js — האזור האישי לתלמיד (ימות המשיח)
+//
+//  כניסה רק עם קוד תלמיד, ורק מטלפון שרשום אצל אותו תלמיד (אפשר לכבות בהגדרות).
+//  אחרי הכניסה: "שלום <שם>, העדכון האחרון בוצע לפני ..." ותפריט:
+//    1 פירוט (נבחן / עבר / לא עבר / מלגה)   2 בדיקה לפי קוד מבחן   3 תלמיד אחר   * יציאה
+//  כל פעולה חוזרת לתפריט. הכל נרשם ביומן (phone_log, line = 'student').
+//
+//  שם הפרמטר שומר את השלב וההקשר:  s{מספר}_{שלב}_{תלמיד hex}_{ניסיונות שגויים}
+//    sc  קוד תלמיד      mn  תפריט      ex  קוד מבחן
+// ============================================================
+
+const text = body => new Response(body, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+const hex = s => [...new TextEncoder().encode(String(s || ''))].map(b => b.toString(16).padStart(2, '0')).join('');
+const unhex = h => { try { return new TextDecoder().decode(new Uint8Array((String(h || '').match(/../g) || []).map(x => parseInt(x, 16)))); } catch (e) { return ''; } };
+const MAX_FAILS = 3;
+
+// digits: false = הקשה חופשית עם סולמית; מחרוזת = ספרה אחת מתוך הרשימה
+const ask = (n, stage, msg, student = '', fails = 0, digits = false) =>
+    text(`read=t-${msg}=s${n}_${stage}_${hex(student)}_${fails},,${digits ? '1' : ''},,,NO,,,,${digits || ''},,,,,no`);
+
+function lastStep(url) {
+    let best = null;
+    for (const [key, value] of url.searchParams.entries()) {
+        const m = /^s(\d+)_([a-z]{2})_([0-9a-f]*)_(\d+)$/.exec(key);
+        if (m && (!best || +m[1] > best.n)) best = { n: +m[1], stage: m[2], student: unhex(m[3]), fails: +m[4], value: String(value || '').trim() };
+    }
+    return best;
+}
+
+const phonesOf = s => { try { const p = typeof s.phones === 'string' ? JSON.parse(s.phones) : s.phones; return (Array.isArray(p) ? p : []).map(normalizePhone).filter(Boolean); } catch (e) { return []; } };
+const fullName = s => `${s.first_name || ''} ${s.last_name || ''}`.trim();
+const MENU = 'לשמיעת הפירוט הקישו 1, לבדיקה לפי קוד מבחן הקישו 2, לתלמיד אחר הקישו 3, ליציאה הקישו כוכבית';
+
+async function summary(env, code) {
+    const r = await env.DB.prepare(`
+        SELECT COUNT(*) AS total,
+            SUM(CASE WHEN se.passed = 1 THEN 1 ELSE 0 END) AS passed,
+            COALESCE(SUM(CASE WHEN se.passed = 1 THEN
+                IFNULL(e.total_mishnayot, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'mishnayot') +
+                IFNULL(e.gemara_pages, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'gemara_pages')
+            ELSE 0 END), 0) AS reward,
+            MAX(se.updated_at) AS last
+        FROM student_exams se JOIN exams e ON se.exam_code = e.exam_code WHERE se.student_code = ?`).bind(code).first();
+    return { total: (r && r.total) || 0, passed: (r && r.passed) || 0, reward: Number((r && r.reward) || 0), last: r && r.last };
+}
+
 export async function handleYemotStudents(request, env) {
     const url = new URL(request.url);
-    
-    // שליפת קוד התלמיד מהשלוחה בימות המשיח
-    const studentCode = url.searchParams.get('student_code');
-    
-    // שלב 1: בקשת קוד תלמיד (אם הלקוח נכנס לראשונה)
-    if (!studentCode) {
-        return new Response("read=t-ברוכים הבאים לאזור האישי אנא הקישו את קוד התלמיד שלכם ולסיום סולמית=student_code,,,,,NO,,,,,,,,,no", { 
-            headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
-        });
+    const step = lastStep(url);
+    const phone = normalizePhone(url.searchParams.get('ApiPhone'));
+    const call_id = url.searchParams.get('ApiCallId') || null;
+    const n = step ? step.n + 1 : 1;
+    const log = row => writeLog(env, { line: 'student', phone, call_id, ...row });
+
+    let settings;
+    try { settings = (await loadSettings(env)).student; } catch (e) { settings = { enabled: true, require_phone: true, closed_message: '' }; }
+
+    // --- הקו סגור ---
+    if (!settings.enabled) {
+        if (!step) await log({ event: 'call', reason: 'line_closed', action: 'hangup' });
+        return text(`${settings.closed_message ? `id_list_message=t-${settings.closed_message}&` : ''}go_to_folder=hangup`);
+    }
+    if (settings.require_phone && !phone) {
+        if (!step) await log({ event: 'call', reason: 'no_caller_id', action: 'hangup' });
+        return text('id_list_message=t-לא ניתן להיכנס לאזור האישי ממספר חסוי&go_to_folder=hangup');
     }
 
-    // שלב 2: אימות התלמיד במסד הנתונים
-    const student = await env.DB.prepare("SELECT * FROM students WHERE student_code = ? AND is_deleted = 0").bind(studentCode).first();
-    if (!student) {
-        return new Response("read=t-קוד תלמיד שגוי אנא הקישו שוב ולסיום סולמית=student_code,,,,,NO,,,,,,,,,no", { 
-            headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
-        });
+    const askCode = (msg, fails = 0) => ask(n, 'sc', msg, '', fails);
+    if (!step) {
+        await log({ event: 'call', reason: 'ok_open', action: 'continue' });
+        return askCode('ברוכים הבאים לאזור האישי, הקישו קוד תלמיד וסולמית');
+    }
+    if (step.value === '*') return text('id_list_message=t-להתראות&go_to_folder=hangup');
+
+    // --- זיהוי התלמיד (נבדק מחדש בכל שלב) ---
+    const code = step.stage === 'sc' ? step.value : step.student;
+    const student = code ? await env.DB.prepare('SELECT * FROM students WHERE student_code = ? AND is_deleted = 0').bind(code).first() : null;
+    const allowed = student && (!settings.require_phone || phonesOf(student).includes(phone));
+
+    if (!allowed) {
+        if (step.stage !== 'sc') return askCode('הקישו קוד תלמיד וסולמית');   // הקשר לא תקף — מתחילים מחדש
+        const reason = !student ? 'wrong_code' : 'phone_mismatch';
+        const fails = step.fails + 1;
+        await log({ event: 'access', reason: fails >= MAX_FAILS ? 'too_many' : reason, action: fails >= MAX_FAILS ? 'hangup' : 'continue',
+            student_code: code, student_name: student ? fullName(student) : null });
+        if (fails >= MAX_FAILS) return text('id_list_message=t-יותר מדי ניסיונות שגויים, השיחה תסתיים&go_to_folder=hangup');
+        return askCode(!student ? 'קוד תלמיד שגוי, הקישו קוד תלמיד שנית וסולמית'
+            : 'מספר הטלפון שממנו התקשרתם אינו רשום אצל תלמיד זה, הקישו קוד תלמיד אחר וסולמית', fails);
     }
 
-    // שלב 3: שליפת סיכום המבחנים והתגמולים
-    const query = `
-        SELECT 
-            COUNT(*) as total_exams,
-            SUM(CASE WHEN se.passed = 1 THEN 1 ELSE 0 END) as passed_exams,
-            SUM(CASE WHEN se.passed != 1 THEN 1 ELSE 0 END) as failed_exams,
-            COALESCE(
-                SUM(
-                    CASE WHEN se.passed = 1 THEN
-                        IFNULL(e.total_mishnayot, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'mishnayot') +
-                        IFNULL(e.gemara_pages, 0) * (SELECT price_per_unit FROM reward_rates WHERE unit_type = 'gemara_pages')
-                    ELSE 0 END
-                ), 0
-            ) as total_reward
-        FROM student_exams se
-        JOIN exams e ON se.exam_code = e.exam_code
-        WHERE se.student_code = ?
-    `;
+    const name = fullName(student);
+    const menu = msg => ask(n, 'mn', msg ? `${msg}, ${MENU}` : MENU, code, 0, '123');
+    const st = () => summary(env, code);
 
-    try {
-        const stats = await env.DB.prepare(query).bind(studentCode).first();
-        
-        const totalExams = stats.total_exams || 0;
-        const passedExams = stats.passed_exams || 0;
-        const failedExams = stats.failed_exams || 0;
-        
-        // הפרדת הסכום לשקלים ואגורות
-        const totalReward = Number(stats.total_reward || 0);
-        const shekels = Math.floor(totalReward);
-        const agorot = Math.round((totalReward - shekels) * 100);
+    // נכנס עכשיו: שלום + העדכון האחרון + תפריט
+    if (step.stage === 'sc') {
+        await log({ event: 'access', reason: 'ok', action: 'continue', student_code: code, student_name: name });
+        const s = await st();
+        return menu(`שלום ${name}, ${s.last ? `העדכון האחרון בוצע ${agoText(s.last)}` : 'עדיין לא נבחנת באף מבחן'}`);
+    }
 
-        // שלב 4: בניית שרשור הפקודות באמצעות מערך (כדי לשים את הנקודות רק בין הפקודות)
-        let messageParts = [];
-        let intro = `t-שלום ${student.first_name} ${student.last_name}`;
-        
-        if (totalExams === 0) {
-            messageParts.push(`${intro} עדיין לא נבחנו באף מבחן`);
-        } else {
-            messageParts.push(`${intro} בסך הכל נבחנת ב`);
-            messageParts.push(`n-${totalExams}`); // מספר המבחנים
-            messageParts.push(`t-מבחנים עברת בהצלחה`);
-            messageParts.push(`n-${passedExams}`); // מבחנים שעבר
-            
-            if (failedExams > 0) {
-                messageParts.push(`t-מבחנים ולא עברת`);
-                messageParts.push(`n-${failedExams}`); // מבחנים שנכשל
-            }
-            
-            messageParts.push(`t-מבחנים הסכום שנצבר לזכותך הוא`);
-            messageParts.push(`n-${shekels}`); // סכום שקלים
-            
-            if (agorot > 0) {
-                messageParts.push(`t-שקלים ו`);
-                messageParts.push(`n-${agorot}`); // אגורות
-                messageParts.push(`t-אגורות`);
-            } else {
-                messageParts.push(`t-שקלים`);
-            }
+    if (step.stage === 'mn') {
+        if (step.value === '3') return askCode('הקישו קוד תלמיד וסולמית');
+        if (step.value === '2') return ask(n, 'ex', 'הקישו מספר מבחן, כוכבית, 1 לאות אלף או 2 לאות בית, וסולמית', code);
+        if (step.value !== '1') return menu('הקשה שגויה');
+        // פירוט
+        const s = await st();
+        await log({ event: 'view', reason: 'summary', student_code: code, student_name: name });
+        if (!s.total) return menu('עדיין לא נבחנת באף מבחן');
+        const shekels = Math.floor(s.reward), agorot = Math.round((s.reward - shekels) * 100);
+        const failed = s.total - s.passed;
+        const parts = [`בסך הכל נבחנת ב.n-${s.total}.t-מבחנים, עברת.n-${s.passed}.t-מבחנים`];
+        if (failed > 0) parts.push(`.t-ולא עברת.n-${failed}.t-מבחנים`);
+        parts.push(`.t-, הסכום שנצבר לזכותך.n-${shekels}.t-שקלים`);
+        if (agorot > 0) parts.push(`.t-ו.n-${agorot}.t-אגורות`);
+        parts.push(`.t-, העדכון האחרון בוצע ${agoText(s.last)}`);
+        return menu(parts.join(''));
+    }
+
+    if (step.stage === 'ex') {
+        const p = step.value.split('*');
+        if (p.length !== 2 || !/^\d+$/.test(p[0]) || (p[1] !== '1' && p[1] !== '2')) {
+            return ask(n, 'ex', 'הקשה שגויה, הקישו מספר מבחן, כוכבית, ואז 1 או 2, וסולמית', code);
         }
-
-        // חיבור כל חלקי המערך בעזרת נקודה (זה יוצר את השרשור המדויק לימות המשיח)
-        const finalMessage = messageParts.join('.');
-
-        return new Response(`id_list_message=${finalMessage}`, { 
-            headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
-        });
-        
-    } catch (error) {
-        return new Response(`id_list_message=t-אירעה שגיאה בקבלת הנתונים`, { 
-            headers: { 'Content-Type': 'text/plain; charset=utf-8' } 
-        });
+        const examCode = `${p[0]}${p[1] === '1' ? 'א' : 'ב'}`;
+        const exam = await env.DB.prepare('SELECT exam_code FROM exams WHERE exam_code = ? AND is_deleted = 0').bind(examCode).first();
+        if (!exam) return menu(`מבחן ${examCode} לא נמצא`);
+        const row = await env.DB.prepare('SELECT passed, updated_at FROM student_exams WHERE student_code = ? AND exam_code = ?').bind(code, examCode).first();
+        await log({ event: 'view', reason: 'exam', student_code: code, student_name: name, exam_code: examCode, passed: row ? row.passed : null });
+        if (!row) return menu(`במבחן ${examCode} עדיין לא נבחנת`);
+        return menu(`במבחן ${examCode} ${row.passed === 1 ? 'עברת' : 'לא עברת'}, העדכון בוצע ${agoText(row.updated_at)}`);
     }
+
+    return askCode('הקישו קוד תלמיד וסולמית');
 }

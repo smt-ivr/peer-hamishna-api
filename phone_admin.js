@@ -55,7 +55,7 @@ export default async function phoneAdminHandler(request, env) {
     try {
         if (route === '/peer/api/phone' && method === 'GET') {
             const today = getLocalTime().slice(0, 10);
-            const [settings, numbers, stats, past] = await Promise.all([
+            const [settings, numbers, stats, past, stuPh] = await Promise.all([
                 loadSettings(env),
                 env.DB.prepare(`SELECT ${COLS.split(', ').map(c => 'n.' + c).join(', ')}, (n.pin_hash IS NOT NULL) AS has_pin,
                         (SELECT MAX(created_at) FROM phone_log l WHERE l.phone = n.phone AND l.event = 'call') AS last_call,
@@ -64,22 +64,24 @@ export default async function phoneAdminHandler(request, env) {
                 env.DB.prepare(`SELECT SUM(CASE WHEN event = 'call' THEN 1 ELSE 0 END) AS calls,
                         SUM(CASE WHEN event = 'call' AND reason NOT LIKE 'ok_%' THEN 1 ELSE 0 END) AS blocked,
                         SUM(CASE WHEN event = 'update' THEN 1 ELSE 0 END) AS updates
-                    FROM phone_log WHERE created_at >= ?`).bind(today).first(),
+                    FROM phone_log WHERE created_at >= ? AND line = 'manager'`).bind(today).first(),
                 env.DB.prepare(`SELECT source_identifier AS phone, COUNT(*) AS updates, MAX(updated_at) AS last
                     FROM student_exams WHERE update_source = 'phone' AND source_identifier IS NOT NULL AND source_identifier != ''
-                    GROUP BY source_identifier ORDER BY updates DESC LIMIT 20`).all()
+                    GROUP BY source_identifier ORDER BY updates DESC LIMIT 20`).all(),
+                env.DB.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN phones IS NOT NULL AND phones NOT IN ('', '[]', 'null') THEN 1 ELSE 0 END) AS with_phone
+                    FROM students WHERE is_deleted = 0`).first()
             ]);
             const listed = new Set(numbers.results.map(n => n.phone));
             const suggestions = past.results.map(p => ({ ...p, phone: normalizePhone(p.phone) })).filter(p => validPhone(p.phone) && !listed.has(p.phone));
-            return json({ settings, numbers: numbers.results, suggestions, reasons: REASONS, now: getLocalTime(), can_write: me.access_level !== 'read_only',
+            return json({ settings, numbers: numbers.results, suggestions, student_phones: { total: (stuPh && stuPh.total) || 0, with_phone: (stuPh && stuPh.with_phone) || 0 }, reasons: REASONS, now: getLocalTime(), can_write: me.access_level !== 'read_only',
                 today: { calls: (stats && stats.calls) || 0, blocked: (stats && stats.blocked) || 0, updates: (stats && stats.updates) || 0 } });
         }
 
         if (route === '/peer/api/phone/settings' && method === 'PUT') {
-            const s = cleanSettings((await request.json().catch(() => ({}))).settings);
+            const old = await loadSettings(env);
+            const s = cleanSettings({ ...old, ...((await request.json().catch(() => ({}))).settings || {}) });   // שדה שלא נשלח — נשאר כמו שהיה
             const err = settingsError(s);
             if (err) return bad(err);
-            const old = await loadSettings(env);
             await env.DB.prepare(`INSERT INTO phone_settings (id, settings, updated_at, updated_by) VALUES (1, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
                 .bind(JSON.stringify(s), getLocalTime(), actor).run();
@@ -88,6 +90,9 @@ export default async function phoneAdminHandler(request, env) {
             const act = b => b.action === 'goto' ? `העברה לשלוחה ${b.folder}` : 'ניתוק';
             if (act(old.blocked) !== act(s.blocked)) ch.push(`מספר לא מורשה: ${act(old.blocked)} ← ${act(s.blocked)}`);
             if (old.blocked.message !== s.blocked.message) ch.push(`הודעה: "${s.blocked.message}"`);
+            if (old.student.enabled !== s.student.enabled) ch.push(`קו תלמידים: ${s.student.enabled ? 'נפתח' : 'נסגר'}`);
+            if (old.student.require_phone !== s.student.require_phone) ch.push(`כניסה רק מטלפון רשום אצל התלמיד: ${s.student.require_phone ? 'כן' : 'לא'}`);
+            if (old.student.closed_message !== s.student.closed_message) ch.push(`הודעת קו סגור: "${s.student.closed_message}"`);
             if (ch.length) await log('settings', null, ch.join(' · '));
             return json({ success: true, settings: s });
         }
@@ -131,14 +136,17 @@ export default async function phoneAdminHandler(request, env) {
         }
 
         if (route === '/peer/api/phone/log' && method === 'GET') {
-            const where = ["l.event = 'call'"], args = [];
+            const student = url.searchParams.get('line') === 'student';
+            // קו הציונים: שורה לכל שיחה (העדכונים נספרים). קו התלמידים: כל אירוע (שיחה, כניסה, האזנה)
+            const where = student ? ["l.line = 'student'"] : ["l.line = 'manager'", "l.event = 'call'"], args = [];
             const result = url.searchParams.get('result');
             const q = (url.searchParams.get('q') || '').trim();
             const beforeId = parseInt(url.searchParams.get('before_id'), 10);
             const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit'), 10) || 100, 1), 300);
-            if (result === 'allowed') where.push("l.reason LIKE 'ok_%'");
-            if (result === 'blocked') where.push("l.reason NOT LIKE 'ok_%'");
-            if (q) { const p = normalizePhone(q); where.push("(IFNULL(l.number_name, '') LIKE ? OR l.phone LIKE ?)"); args.push(`%${q}%`, `%${p || q}%`); }
+            const OK = student ? "l.reason IN ('ok', 'ok_open', 'summary', 'exam')" : "l.reason LIKE 'ok_%'";
+            if (result === 'allowed') where.push(OK);
+            if (result === 'blocked') where.push(`NOT (${OK})`);
+            if (q) { const p = normalizePhone(q); where.push("(IFNULL(l.number_name, '') LIKE ? OR IFNULL(l.student_name, '') LIKE ? OR IFNULL(l.student_code, '') = ? OR l.phone LIKE ?)"); args.push(`%${q}%`, `%${q}%`, q, `%${p || q}%`); }
             if (!isNaN(beforeId)) { where.push('l.id < ?'); args.push(beforeId); }
             const { results } = await env.DB.prepare(`SELECT l.*,
                     (SELECT COUNT(*) FROM phone_log u WHERE u.event = 'update' AND u.call_id = l.call_id AND l.call_id IS NOT NULL) AS updates
