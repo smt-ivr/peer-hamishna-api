@@ -1,10 +1,10 @@
 import { getLocalTime } from './time.js';
 
 // הגדרות עיצוב הדוחות — נשמרות כ-JSON בטבלת report_settings.
-// פרופילים: 'default' = עיצוב דוח ההישגים, 'student_list' = הגדרות רשימת התלמידים להדפסה.
+// פרופילים: 'default' = עיצוב דוח ההישגים, 'student_list' = רשימת התלמידים להדפסה, 'student_xlsx' = אקסל הסכומים.
 // נבחר ב-?profile=... ; משותף לכל המשתמשים.
 const DEFAULT_PROFILE = 'default';
-const PROFILES = new Set(['default', 'student_list']);
+const PROFILES = new Set(['default', 'student_list', 'student_xlsx']);
 const MAX_BYTES = 16 * 1024;
 
 function json(data, status = 200) {
