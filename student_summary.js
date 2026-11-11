@@ -83,6 +83,8 @@ export default async function studentSummaryHandler(request, env) {
       let total_attempted = 0;
       let total_passed = 0;
       let total_reward = 0;
+      let total_mishnayot = 0;      // משניות במבחנים שעבר
+      let total_gemara_pages = 0;   // דפי גמרא במבחנים שעבר
 
       const studentExamsList = [];
 
@@ -116,6 +118,8 @@ export default async function studentSummaryHandler(request, env) {
             total_passed++;
             rewardEarned = examReward;
             total_reward += examReward;
+            total_mishnayot += Number(exam.total_mishnayot) || 0;
+            total_gemara_pages += Number(exam.gemara_pages) || 0;
           } else {
             statusText = 'לא עבר';
             passed = false;
@@ -177,7 +181,9 @@ export default async function studentSummaryHandler(request, env) {
           total_available_exams: total_available_exams,
           total_attempted: total_attempted,
           total_passed: total_passed,
-          total_reward: total_reward
+          total_reward: total_reward,
+          total_mishnayot: total_mishnayot,
+          total_gemara_pages: total_gemara_pages
         },
         exams: studentExamsList
       };
