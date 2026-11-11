@@ -1,5 +1,5 @@
 import { getLocalTime } from './time.js';
-import { loadSettings, normalizePhone, writeLog, agoText, decide, nowParts } from './phone_access.js';
+import { loadSettings, normalizePhone, writeLog, agoText, decide, nowParts, say } from './phone_access.js';
 
 // ============================================================
 //  yemot_students.js — האזור האישי לתלמיד (ימות המשיח)
@@ -108,7 +108,7 @@ export async function handleYemotStudents(request, env) {
     if (step.stage === 'sc') {
         await log({ event: 'access', reason: manager ? 'ok_manager' : 'ok', action: 'continue', student_code: code, student_name: name, number_name: manager ? mgrEntry.name : null });
         const s = await st();
-        return menu(`${manager ? 'כניסת מנהל, התלמיד' : 'שלום'} ${name}, ${s.last ? `העדכון האחרון בוצע ${agoText(s.last)}` : W.notYet}`);
+        return menu(`${manager ? 'כניסת מנהל, התלמיד' : 'שלום'} ${say(name)}, ${s.last ? `העדכון האחרון בוצע ${agoText(s.last)}` : W.notYet}`);
     }
 
     if (step.stage === 'mn') {

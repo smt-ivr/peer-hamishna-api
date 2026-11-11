@@ -1,5 +1,5 @@
 import { getLocalTime } from './time.js';
-import { phoneGate, logUpdate, loadSettings, normalizePhone, validPhone, isExpired, checkPin, writeLog } from './phone_access.js';
+import { phoneGate, logUpdate, loadSettings, normalizePhone, validPhone, isExpired, checkPin, writeLog, say } from './phone_access.js';
 import { audit, describeChange } from './phone_audit.js';
 
 // ============================================================
@@ -76,13 +76,10 @@ function canChange(existing, ctx, settings, now) {
     return { ok: false };
 }
 
-function examDetails(exam) {
-    let d = '';
-    if (exam.masechet) d += `${exam.masechet}, `;
-    if (exam.chapter_num) d += `פרק ${exam.chapter_num}, `;
-    if (exam.chapter_name) d += `${exam.chapter_name}, `;
-    if (exam.from_page && exam.to_page) d += `מ ${exam.from_page} עד ${exam.to_page}, `;
-    return d;
+// מה המבחן — בקצרה ובלי דפים / פרקים (תווים כמו נקודה וגרש תוקעים את ימות המשיח)
+function examLabel(exam) {
+    const type = exam.exam_type === 'gemara' ? 'בגמרא' : exam.exam_type === 'mishnayot' ? 'במשניות' : '';
+    return [type, say(exam.masechet)].filter(Boolean).join(' ');
 }
 
 export async function handleYemotManager(request, env) {
@@ -131,7 +128,7 @@ export async function handleYemotManager(request, env) {
     const studentCode = step.stage === 'st' ? step.value : step.student;
     const student = studentCode ? await env.DB.prepare('SELECT * FROM students WHERE student_code = ? AND is_deleted = 0').bind(studentCode).first() : null;
     if (!student) return askStudent('קוד תלמיד שגוי, הקישו קוד תלמיד שנית');
-    const name = fullName(student);
+    const name = say(fullName(student));     // להקראה בלבד
     const askExam = msg => ask(n, 'ex', msg, { student: studentCode });
 
     if (step.stage === 'st') return askExam(`${name}, הקישו מספר מבחן, כוכבית, 1 לאות אלף או 2 לאות בית, וסולמית`);
@@ -164,7 +161,7 @@ export async function handleYemotManager(request, env) {
         env.DB.prepare('SELECT * FROM student_exams WHERE student_code = ? AND exam_code = ?').bind(studentCode, examCode).first()
     ]);
     const perm = existing ? canChange(existing, ctx, settings, now) : { ok: true };
-    const askPass = (msg = '') => ask(n, 'ps', `${msg}מבחן ${examCode}, ${examDetails(exam)} עבר הקישו 1, לא עבר הקישו 2`, { student: studentCode, exam: examCode }, true);
+    const askPass = (msg = '') => ask(n, 'ps', `${msg}מבחן ${examCode}${examLabel(exam) ? `, ${examLabel(exam)}` : ''}, עבר הקישו 1, לא עבר הקישו 2`, { student: studentCode, exam: examCode }, true);
 
     // נבחר מבחן: אם כבר יש ציון — מודיעים, ומציעים לשנות רק למי שמורשה
     if (step.stage === 'ex') {
@@ -283,7 +280,7 @@ async function manage(env, ctx, step, n, askStudent) {
     if (action === 'del') {
         if (!entry) return menu(`המספר${sayPhone(target)}לא נמצא ברשימה`);
         if (!entry.active) return menu(`ההרשאה למספר${sayPhone(target)}כבר מבוטלת`);
-        if (step.stage === 'mp') return ask(n, 'mc', `לביטול ההרשאה של ${entry.name}, מספר${sayPhone(target)}הקישו 1, לחזרה הקישו 2`, { student: 'del', exam: target }, true);
+        if (step.stage === 'mp') return ask(n, 'mc', `לביטול ההרשאה של ${say(entry.name)}, מספר${sayPhone(target)}הקישו 1, לחזרה הקישו 2`, { student: 'del', exam: target }, true);
         if (step.value !== '1') return menu();
         await env.DB.prepare('UPDATE phone_numbers SET active = 0, updated_at = ? WHERE id = ?').bind(now, entry.id).run();
         await audit(env, { ...who, action: 'disable', phone: target, name: entry.name, details: 'מצב: פעיל ← מושבת' });
@@ -303,7 +300,7 @@ async function studentPhones(env, step, n, menu, who) {
     const student = code ? await env.DB.prepare('SELECT * FROM students WHERE student_code = ? AND is_deleted = 0').bind(code).first() : null;
     if (!student) return ask(n, 'ms', 'קוד תלמיד שגוי, הקישו קוד תלמיד שנית וסולמית', { student: 'sp' });
     const name = fullName(student), phones = stuPhones(student);
-    const sub = (msg = '') => ask(n, 'mz', `${msg}${msg ? ', ' : ''}${name}, ${phones.length ? `רשומים ${phones.length} טלפונים` : 'אין טלפונים רשומים'}, לשמיעת הטלפונים הקישו 1, להוספת טלפון הקישו 2, להסרת טלפון הקישו 3, לחזרה לתפריט הניהול הקישו 0`,
+    const sub = (msg = '') => ask(n, 'mz', `${msg}${msg ? ', ' : ''}${say(name)}, ${phones.length ? `רשומים ${phones.length} טלפונים` : 'אין טלפונים רשומים'}, לשמיעת הטלפונים הקישו 1, להוספת טלפון הקישו 2, להסרת טלפון הקישו 3, לחזרה לתפריט הניהול הקישו 0`,
         { student: 'sp', exam: code }, '1230');
     const save = async (list, action, ph, details) => {
         await env.DB.prepare('UPDATE students SET phones = ? WHERE student_code = ?').bind(JSON.stringify(list), code).run();

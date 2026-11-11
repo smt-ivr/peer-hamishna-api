@@ -24,6 +24,9 @@ export const DEFAULT_SETTINGS = { edit_minutes: 5, student: DEFAULT_STUDENT, blo
 
 // שלוחה בימות המשיח: /5 , /2/3 — ספרות ולוכסנים בלבד
 export const validFolder = f => /^\/?[0-9]+(\/[0-9]+)*$/.test(String(f || ''));
+// שם / מסכת / כל טקסט מהמערכת שמוקרא בימות המשיח: רק אותיות, ספרות ורווחים.
+// נקודה, מקף, גרש, מרכאות, סוגריים וכו' שוברים את הפקודה של ימות המשיח — לכן הם יורדים תמיד.
+export const say = s => String(s ?? '').replace(/[^\u05D0-\u05EAa-zA-Z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 // טקסט להקראה (t-): בלי תווים שמפרקים את הפקודה של ימות המשיח
 export const speakable = s => String(s || '').replace(/[.,&=\-"'\n\r*#]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
 
