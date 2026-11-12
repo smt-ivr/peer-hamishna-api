@@ -78,6 +78,14 @@ export default async function studentSummaryHandler(request, env) {
       });
     }
 
+    // שמות המספרים המורשים — כדי להציג מי עדכן בטלפון (אם הטבלה עוד לא קיימת — בלי שמות)
+    const phoneNames = new Map();
+    try {
+      const pn = await env.DB.prepare("SELECT phone, name FROM phone_numbers").all();
+      (pn.results || []).forEach(r => phoneNames.set(r.phone, r.name));
+    } catch (e) { /* אין טבלה */ }
+    const normPhone = v => { let d = String(v || '').replace(/\D/g, ''); if (d.startsWith('972')) d = '0' + d.slice(3); return d; };
+
     // 5. עיבוד ובניית המערך הסופי לכל תלמיד
     const summary = students.map(student => {
       const studentGradeVal = getGradeValue(student.class_grade);
@@ -174,7 +182,10 @@ export default async function studentSummaryHandler(request, env) {
           reward_earned: rewardEarned, 
           potential_reward: examReward,
           updated_at: studentExamRecord ? studentExamRecord.updated_at : null,
-          update_source: studentExamRecord ? studentExamRecord.update_source : null
+          update_source: studentExamRecord ? studentExamRecord.update_source : null,
+          // בטלפון: המספר ושם המורשה (אם קיים ברשימה). באתר לא חושפים את כתובת ה-IP
+          update_phone: studentExamRecord && studentExamRecord.update_source === 'phone' ? normPhone(studentExamRecord.source_identifier) : null,
+          update_by: studentExamRecord && studentExamRecord.update_source === 'phone' ? (phoneNames.get(normPhone(studentExamRecord.source_identifier)) || null) : null
         });
       });
 
