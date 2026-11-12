@@ -13,6 +13,9 @@ function getGradeValue(gradeStr) {
   return gradesMap[cleanGrade] || 0;
 }
 
+// תעודה עם מסגרת: מי שעבר לפחות 50% מהמשניות שהוא זכאי להיבחן עליהן (לפי הכיתה שלו)
+const FRAME_PCT = 50;
+
 export default async function studentSummaryHandler(request, env) {
   const url = new URL(request.url);
   const method = request.method;
@@ -85,6 +88,8 @@ export default async function studentSummaryHandler(request, env) {
       let total_reward = 0;
       let total_mishnayot = 0;      // משניות במבחנים שעבר
       let total_gemara_pages = 0;   // דפי גמרא במבחנים שעבר
+      let available_mishnayot = 0;  // משניות בכל המבחנים שהתלמיד זכאי להיבחן עליהם
+      let available_gemara_pages = 0;
 
       const studentExamsList = [];
 
@@ -98,6 +103,8 @@ export default async function studentSummaryHandler(request, env) {
         }
 
         total_available_exams++; 
+        available_mishnayot += Number(exam.total_mishnayot) || 0;
+        available_gemara_pages += Number(exam.gemara_pages) || 0;
 
         // חישוב פוטנציאל הרווח על המבחן הזה
         const examReward = ((exam.total_mishnayot || 0) * (rates['mishnayot'] || 0)) +
@@ -183,7 +190,12 @@ export default async function studentSummaryHandler(request, env) {
           total_passed: total_passed,
           total_reward: total_reward,
           total_mishnayot: total_mishnayot,
-          total_gemara_pages: total_gemara_pages
+          total_gemara_pages: total_gemara_pages,
+          available_mishnayot: available_mishnayot,
+          available_gemara_pages: available_gemara_pages,
+          mishnayot_pct: available_mishnayot ? Math.round(total_mishnayot / available_mishnayot * 1000) / 10 : 0,
+          frame_eligible: available_mishnayot > 0 && total_mishnayot * 100 >= available_mishnayot * FRAME_PCT,
+          frame_pct: FRAME_PCT
         },
         exams: studentExamsList
       };
