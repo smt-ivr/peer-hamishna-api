@@ -66,7 +66,7 @@ export default async function dashboardHandler(request, env) {
     const daily = new Map();
     for (let i = DAYS_BACK - 1; i >= 0; i--) daily.set(shiftDate(today, i), { date: shiftDate(today, i), passed: 0, failed: 0 });
     const weekday = [0, 0, 0, 0, 0, 0, 0];
-    const sources = { phone: 0, web: 0, other: 0 };
+    const sources = { phone: 0, web: 0, legacy: 0, other: 0 };
     const examStats = new Map();
 
     let passedTotal = 0;
@@ -86,7 +86,7 @@ export default async function dashboardHandler(request, env) {
       es.attempts++; if (isPass) es.passed++;
       examStats.set(r.exam_code, es);
 
-      const src = r.update_source === 'phone' ? 'phone' : (String(r.update_source || '').startsWith('web') ? 'web' : 'other');
+      const src = r.update_source === 'phone' ? 'phone' : r.update_source === 'legacy_sheet' ? 'legacy' : (String(r.update_source || '').startsWith('web') ? 'web' : 'other');
       sources[src]++;
 
       if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
