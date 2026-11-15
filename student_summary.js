@@ -13,8 +13,9 @@ function getGradeValue(gradeStr) {
   return gradesMap[cleanGrade] || 0;
 }
 
-// תעודה עם מסגרת: מי שעבר לפחות 50% מהמשניות שהוא זכאי להיבחן עליהן (לפי הכיתה שלו)
-const FRAME_PCT = 50;
+// תעודה עם מסגרת: מי שעבר לפחות X% מהמשניות שהוא זכאי להיבחן עליהן (לפי הכיתה שלו).
+// X נשמר בהגדרות (report_settings, פרופיל 'app', שדה frame_pct). ברירת מחדל 50.
+const DEFAULT_FRAME_PCT = 50;
 
 export default async function studentSummaryHandler(request, env) {
   const url = new URL(request.url);
@@ -79,6 +80,21 @@ export default async function studentSummaryHandler(request, env) {
     }
 
     // שמות המספרים המורשים — כדי להציג מי עדכן בטלפון (אם הטבלה עוד לא קיימת — בלי שמות)
+    // אחוז המשניות לתעודה עם מסגרת (מההגדרות)
+    let FRAME_PCT = DEFAULT_FRAME_PCT;
+    try {
+      const row = await env.DB.prepare("SELECT settings FROM report_settings WHERE profile = 'app'").first();
+      const v = row ? Number(JSON.parse(row.settings).frame_pct) : NaN;
+      if (v > 0 && v <= 100) FRAME_PCT = v;
+    } catch (e) { /* ברירת מחדל */ }
+
+    // בונוסים (לא נכנסים לסכום המלגה ולא מופיעים בדוח — רק בניהול תלמידים)
+    const bonusMap = new Map();
+    try {
+      const b = await env.DB.prepare("SELECT student_code, SUM(amount) AS total FROM student_bonuses GROUP BY student_code").all();
+      (b.results || []).forEach(r => bonusMap.set(r.student_code, Number(r.total) || 0));
+    } catch (e) { /* הטבלה עוד לא נוצרה */ }
+
     const phoneNames = new Map();
     try {
       const pn = await env.DB.prepare("SELECT phone, name FROM phone_numbers").all();
@@ -206,7 +222,8 @@ export default async function studentSummaryHandler(request, env) {
           available_gemara_pages: available_gemara_pages,
           mishnayot_pct: available_mishnayot ? Math.round(total_mishnayot / available_mishnayot * 1000) / 10 : 0,
           frame_eligible: available_mishnayot > 0 && total_mishnayot * 100 >= available_mishnayot * FRAME_PCT,
-          frame_pct: FRAME_PCT
+          frame_pct: FRAME_PCT,
+          bonus: bonusMap.get(student.student_code) || 0
         },
         exams: studentExamsList
       };
