@@ -9,6 +9,7 @@ import dashboardHandler from './dashboard.js';
 import adminHandler from './admin.js';
 import authLoginHandler from './auth_login.js';
 import phoneAdminHandler from './phone_admin.js';
+import bonusesHandler from './bonuses.js';
 
 const API_VERSION = "1.7.0";
 
@@ -127,6 +128,9 @@ export default {
       else if (path.startsWith('/peer/api/exams')) {
         response = await examsHandler(request, env);
       } 
+      else if (path === '/peer/api/bonuses' || path.startsWith('/peer/api/bonuses/')) {
+        response = await bonusesHandler(request, env);
+      }
       else if (path.startsWith('/peer/api/students')) {
         response = await studentsHandler(request, env);
       }
