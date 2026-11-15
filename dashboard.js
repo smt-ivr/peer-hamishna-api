@@ -1,3 +1,4 @@
+import { bonusTotals } from './bonuses.js';
 import { getLocalTime } from './time.js';
 
 // ============================================================
@@ -99,6 +100,12 @@ export default async function dashboardHandler(request, env) {
         if (d) { if (isPass) d.passed++; else d.failed++; }
         weekday[new Date(`${date}T12:00:00Z`).getUTCDay()]++;
       }
+    }
+
+    // בונוסים — נכנסים לסכומי הכסף
+    for (const [code, b] of await bonusTotals(env)) {
+      const st = students.get(code);
+      if (st && b.total) { st.reward += b.total; rewardTotal += b.total; }
     }
 
     // --- לפי כיתה ---

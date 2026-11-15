@@ -1,3 +1,4 @@
+import { bonusTotals } from './bonuses.js';
 // ---------- ולידציה: שם פרטי, שם משפחה וכיתה הם חובה ----------
 const CODE_RE = /^[0-9A-Za-z\u0590-\u05FF_-]{1,20}$/;
 const clean = (v, max) => String(v ?? '').trim().slice(0, max);
@@ -168,9 +169,14 @@ export default async function studentsHandler(request, env) {
       if (studentCode) {
         const result = await env.DB.prepare(`${baseQuery} AND s.student_code = ?`).bind(studentCode).first();
         if (!result) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
+        if ('total_reward' in result) result.total_reward = (Number(result.total_reward) || 0) + (((await bonusTotals(env, studentCode)).get(studentCode) || {}).total || 0);   // כולל בונוס
         return new Response(JSON.stringify(formatStudent(result)), { status: 200 });
       } else {
         const { results } = await env.DB.prepare(`${baseQuery} ORDER BY s.class_grade ASC, s.first_name ASC`).all();
+        if (fullDetails) {      // הסכום כולל בונוסים
+            const bm = await bonusTotals(env);
+            results.forEach(r => { if ('total_reward' in r) r.total_reward = (Number(r.total_reward) || 0) + ((bm.get(r.student_code) || {}).total || 0); });
+        }
         const formattedResults = results.map(formatStudent);
         return new Response(JSON.stringify(formattedResults), { status: 200 });
       }
