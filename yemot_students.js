@@ -1,5 +1,6 @@
 import { getLocalTime } from './time.js';
 import { loadSettings, normalizePhone, writeLog, agoText, decide, nowParts, say } from './phone_access.js';
+import { bonusTotals } from './bonuses.js';
 
 // ============================================================
 //  yemot_students.js — האזור האישי לתלמיד (ימות המשיח)
@@ -46,7 +47,8 @@ async function summary(env, code) {
             ELSE 0 END), 0) AS reward,
             MAX(se.updated_at) AS last
         FROM student_exams se JOIN exams e ON se.exam_code = e.exam_code WHERE se.student_code = ?`).bind(code).first();
-    return { total: (r && r.total) || 0, passed: (r && r.passed) || 0, reward: Number((r && r.reward) || 0), last: r && r.last };
+    const bonus = ((await bonusTotals(env, code)).get(code) || {}).total || 0;     // בונוס נכנס לסכום (בלי לומר שזה בונוס)
+    return { total: (r && r.total) || 0, passed: (r && r.passed) || 0, reward: Number((r && r.reward) || 0) + bonus, last: r && r.last };
 }
 
 export async function handleYemotStudents(request, env) {

@@ -13,6 +13,8 @@ function getGradeValue(gradeStr) {
   return gradesMap[cleanGrade] || 0;
 }
 
+import { bonusTotals } from './bonuses.js';
+
 // תעודה עם מסגרת: מי שעבר לפחות X% מהמשניות שהוא זכאי להיבחן עליהן (לפי הכיתה שלו).
 // X נשמר בהגדרות (report_settings, פרופיל 'app', שדה frame_pct). ברירת מחדל 50.
 const DEFAULT_FRAME_PCT = 50;
@@ -88,12 +90,8 @@ export default async function studentSummaryHandler(request, env) {
       if (v > 0 && v <= 100) FRAME_PCT = v;
     } catch (e) { /* ברירת מחדל */ }
 
-    // בונוסים (לא נכנסים לסכום המלגה ולא מופיעים בדוח — רק בניהול תלמידים)
-    const bonusMap = new Map();
-    try {
-      const b = await env.DB.prepare("SELECT student_code, SUM(amount) AS total FROM student_bonuses GROUP BY student_code").all();
-      (b.results || []).forEach(r => bonusMap.set(r.student_code, Number(r.total) || 0));
-    } catch (e) { /* הטבלה עוד לא נוצרה */ }
+    // בונוסים: נכנסים לסכום הכסף של התלמיד (total_reward). רק ניהול התלמידים מציג שזה בונוס
+    const bonusMap = await bonusTotals(env, studentCode || null);
 
     const phoneNames = new Map();
     try {
@@ -215,7 +213,8 @@ export default async function studentSummaryHandler(request, env) {
           total_available_exams: total_available_exams,
           total_attempted: total_attempted,
           total_passed: total_passed,
-          total_reward: total_reward,
+          total_reward: total_reward + ((bonusMap.get(student.student_code) || {}).total || 0),   // כולל בונוסים
+          exam_reward: total_reward,                                                             // רק ממבחנים
           total_mishnayot: total_mishnayot,
           total_gemara_pages: total_gemara_pages,
           available_mishnayot: available_mishnayot,
@@ -223,7 +222,8 @@ export default async function studentSummaryHandler(request, env) {
           mishnayot_pct: available_mishnayot ? Math.round(total_mishnayot / available_mishnayot * 1000) / 10 : 0,
           frame_eligible: available_mishnayot > 0 && total_mishnayot * 100 >= available_mishnayot * FRAME_PCT,
           frame_pct: FRAME_PCT,
-          bonus: bonusMap.get(student.student_code) || 0
+          bonus: (bonusMap.get(student.student_code) || {}).total || 0,
+          bonus_visible: (bonusMap.get(student.student_code) || {}).visible || 0   // בונוסים שסומנו "להציג בדוח"
         },
         exams: studentExamsList
       };
