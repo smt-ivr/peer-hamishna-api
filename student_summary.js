@@ -83,12 +83,20 @@ export default async function studentSummaryHandler(request, env) {
 
     // שמות המספרים המורשים — כדי להציג מי עדכן בטלפון (אם הטבלה עוד לא קיימת — בלי שמות)
     // אחוז המשניות לתעודה עם מסגרת (מההגדרות)
-    let FRAME_PCT = DEFAULT_FRAME_PCT;
+    // הגדרות התעודה (התאמה אישית): לפי משניות ו/או גמרא, אחוז לכל אחד, "אחד מהם" או "שניהם"
+    const F = { pct: DEFAULT_FRAME_PCT, gpct: DEFAULT_FRAME_PCT, useM: true, useG: false, combine: 'any' };
     try {
       const row = await env.DB.prepare("SELECT settings FROM report_settings WHERE profile = 'app'").first();
-      const v = row ? Number(JSON.parse(row.settings).frame_pct) : NaN;
-      if (v > 0 && v <= 100) FRAME_PCT = v;
+      const a = row ? JSON.parse(row.settings) : {};
+      const n = v => { v = Number(v); return v > 0 && v <= 100 ? v : null; };
+      F.pct = n(a.frame_pct) ?? F.pct;
+      F.gpct = n(a.frame_gemara_pct) ?? F.gpct;
+      if (typeof a.frame_use_mish === 'boolean') F.useM = a.frame_use_mish;
+      if (typeof a.frame_use_gemara === 'boolean') F.useG = a.frame_use_gemara;
+      if (!F.useM && !F.useG) F.useM = true;
+      if (a.frame_combine === 'all') F.combine = 'all';
     } catch (e) { /* ברירת מחדל */ }
+    const FRAME_PCT = F.pct;
 
     // בונוסים: נכנסים לסכום הכסף של התלמיד (total_reward). רק ניהול התלמידים מציג שזה בונוס
     const bonusMap = await bonusTotals(env, studentCode || null);
@@ -220,8 +228,22 @@ export default async function studentSummaryHandler(request, env) {
           available_mishnayot: available_mishnayot,
           available_gemara_pages: available_gemara_pages,
           mishnayot_pct: available_mishnayot ? Math.round(total_mishnayot / available_mishnayot * 1000) / 10 : 0,
-          frame_eligible: available_mishnayot > 0 && total_mishnayot * 100 >= available_mishnayot * FRAME_PCT,
-          frame_pct: FRAME_PCT,
+          gemara_pct: available_gemara_pages ? Math.round(total_gemara_pages / available_gemara_pages * 1000) / 10 : 0,
+          // זכאות: כל תחום שנבחר ושיש בו מה להיבחן (כיתה בלי גמרא — הגמרא לא נספרת לה)
+          ...(() => {
+            const mOk = available_mishnayot > 0 && total_mishnayot * 100 >= available_mishnayot * F.pct;
+            const gOk = available_gemara_pages > 0 && total_gemara_pages * 100 >= available_gemara_pages * F.gpct;
+            const checks = [];
+            if (F.useM && available_mishnayot > 0) checks.push(mOk);
+            if (F.useG && available_gemara_pages > 0) checks.push(gOk);
+            const eligible = checks.length > 0 && (F.combine === 'all' ? checks.every(Boolean) : checks.some(Boolean));
+            return { frame_eligible: eligible, frame_mish_ok: mOk, frame_gemara_ok: gOk };
+          })(),
+          frame_pct: F.pct,
+          frame_gemara_pct: F.gpct,
+          frame_use_mish: F.useM,
+          frame_use_gemara: F.useG,
+          frame_combine: F.combine,
           bonus: (bonusMap.get(student.student_code) || {}).total || 0,
           bonus_visible: (bonusMap.get(student.student_code) || {}).visible || 0   // בונוסים שסומנו "להציג בדוח"
         },
