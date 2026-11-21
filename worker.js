@@ -1,4 +1,5 @@
 import examsHandler from './exams.js';
+import changeLogHandler from './change_log.js';
 import studentsHandler from './students.js';
 import studentExamsHandler from './student_exams.js';
 import studentSummaryHandler from './student_summary.js';
@@ -125,6 +126,9 @@ export default {
           message: "API is up and running securely!" 
         }), { status: 200 });
       } 
+      else if (path === '/peer/api/change-log') {
+        response = await changeLogHandler(request, env);
+      }
       else if (path.startsWith('/peer/api/exams')) {
         response = await examsHandler(request, env);
       } 

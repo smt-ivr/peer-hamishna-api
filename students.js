@@ -1,8 +1,12 @@
+import { logChange, diff } from './change_log.js';
 import { bonusTotals } from './bonuses.js';
 // ---------- ולידציה: שם פרטי, שם משפחה וכיתה הם חובה ----------
 const CODE_RE = /^[0-9A-Za-z\u0590-\u05FF_-]{1,20}$/;
 const clean = (v, max) => String(v ?? '').trim().slice(0, max);
 const badRequest = (message) => new Response(JSON.stringify({ error: 'Validation failed', message }), { status: 400 });
+
+const STU_LABELS = { first_name: 'שם פרטי', last_name: 'שם משפחה', class_grade: 'כיתה', phones: 'טלפונים' };
+const phonesArr = p => { try { return typeof p === 'string' ? JSON.parse(p) : (p || []); } catch (e) { return []; } };
 
 function validateStudent(body) {
   if (!body || typeof body !== 'object') return { message: 'נתונים חסרים' };
@@ -203,6 +207,7 @@ export default async function studentsHandler(request, env) {
           `).bind(student.student_code, student.first_name, student.last_name, student.class_grade, JSON.stringify(student.phones))
         );
         const results = await env.DB.batch(stmts);
+        await logChange(request, env, 'student', null, 'ייבוא', `${results.length} תלמידים: ${cleaned.map(x => x.student_code).join(', ')}`);
         return new Response(JSON.stringify({ success: true, count: results.length }), { status: 201 });
       } else {
         const v = validateStudent(await request.json());
@@ -212,6 +217,7 @@ export default async function studentsHandler(request, env) {
           INSERT INTO students (student_code, first_name, last_name, class_grade, phones)
           VALUES (?, ?, ?, ?, ?) RETURNING *
         `).bind(finalCode, v.data.first_name, v.data.last_name, v.data.class_grade, JSON.stringify(v.data.phones)).first();
+        await logChange(request, env, 'student', finalCode, 'הוספה', diff(null, v.data, STU_LABELS));
         return new Response(JSON.stringify(formatStudent(result)), { status: 201 });
       }
     }
@@ -220,6 +226,7 @@ export default async function studentsHandler(request, env) {
     if (method === 'PUT' && studentCode && studentCode !== 'bulk' && !subAction) {
       const v = validateStudent(await request.json());
       if (!v.data) return badRequest(v.message);
+      const before = await env.DB.prepare('SELECT * FROM students WHERE student_code = ? AND is_deleted = 0').bind(studentCode).first();
 
       const result = await env.DB.prepare(`
         UPDATE students SET first_name = ?, last_name = ?, class_grade = ?, phones = ?
@@ -227,6 +234,8 @@ export default async function studentsHandler(request, env) {
       `).bind(v.data.first_name, v.data.last_name, v.data.class_grade, JSON.stringify(v.data.phones), studentCode).first();
       
       if (!result) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
+      const changes = diff(before && { ...before, phones: phonesArr(before.phones) }, v.data, STU_LABELS);
+      if (changes) await logChange(request, env, 'student', studentCode, 'עריכה', changes);
       return new Response(JSON.stringify(formatStudent(result)), { status: 200 });
     }
 
@@ -260,6 +269,7 @@ export default async function studentsHandler(request, env) {
 
       const result = await env.DB.prepare("SELECT * FROM students WHERE student_code = ?").bind(newCode).first();
       if (!result) return new Response(JSON.stringify({ error: 'Update failed or student not found' }), { status: 404 });
+      await logChange(request, env, 'student', newCode, 'שינוי קוד', `קוד: ${studentCode} ← ${newCode}`);
       
       return new Response(JSON.stringify({ 
         success: true, 
@@ -271,6 +281,7 @@ export default async function studentsHandler(request, env) {
     if (method === 'DELETE' && studentCode && studentCode !== 'bulk') {
       const result = await env.DB.prepare("UPDATE students SET is_deleted = 1 WHERE student_code = ?").bind(studentCode).run();
       if (result.meta.changes === 0) return new Response(JSON.stringify({ error: 'Student not found' }), { status: 404 });
+      await logChange(request, env, 'student', studentCode, 'מחיקה');
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     }
     
