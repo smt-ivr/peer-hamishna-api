@@ -1,3 +1,4 @@
+import { logChange, diff } from './change_log.js';
 // ============================================================
 //  exams.js — ניהול מבחנים (שרת)
 //  GET    /exams                      רשימת מבחנים   (?include_deleted=true  ?with_usage=true)
@@ -178,6 +179,9 @@ function json(data, status = 200) {
 
 // ---------- ה-handler ----------
 
+const EXAM_LABELS = { exam_type: 'סוג', masechet: 'מסכת', chapter_num: 'פרק', chapter_name: 'שם פרק', chapter_title: 'כותרת',
+  from_page: 'מדף', to_page: 'עד דף', total_mishnayot: 'משניות', gemara_pages: 'דפי גמרא', target_grade: 'כיתה' };
+
 export default async function examsHandler(request, env) {
   const url = new URL(request.url);
   const method = request.method;
@@ -210,6 +214,7 @@ export default async function examsHandler(request, env) {
         )
       );
       const results = await env.DB.batch(stmts);
+      await logChange(request, env, 'exam', null, 'ייבוא', `${results.length} מבחנים: ${validExams.map(e => e.exam_code).join(', ')}`);
       return json({ success: true, count: results.length }, 201);
     }
 
@@ -257,6 +262,7 @@ export default async function examsHandler(request, env) {
       const code = await getNextExamCode(env);
       await env.DB.prepare(INSERT_SQL).bind(...insertArgs(code, v.data)).run();
       const [created] = await fetchByCodes(env, [code]);
+      await logChange(request, env, 'exam', code, 'הוספה', diff(null, v.data, EXAM_LABELS));
       return json(created, 201);
     }
 
@@ -283,6 +289,7 @@ export default async function examsHandler(request, env) {
         return st;
       });
       await env.DB.batch(stmts);
+      for (let i = 0; i < codes.length; i++) await logChange(request, env, 'exam', codes[i], 'הוספה', diff(null, cleaned[i], EXAM_LABELS));
       return json({ success: true, count: codes.length, created: await fetchByCodes(env, codes) }, 201);
     }
 
@@ -291,6 +298,7 @@ export default async function examsHandler(request, env) {
       const r = await env.DB.prepare("UPDATE exams SET is_deleted = 0 WHERE exam_code = ? AND is_deleted = 1").bind(examCode).run();
       if (r.meta.changes === 0) return json({ error: 'Not found' }, 404);
       const [restored] = await fetchByCodes(env, [examCode]);
+      await logChange(request, env, 'exam', examCode, 'שחזור');
       return json(restored, 200);
     }
 
@@ -299,6 +307,7 @@ export default async function examsHandler(request, env) {
       const v = validateExam(await request.json());
       if (!v.ok) return json({ error: 'Validation failed', message: v.message }, 400);
       const d = v.data;
+      const before = await env.DB.prepare('SELECT * FROM exams WHERE exam_code = ? AND is_deleted = 0').bind(examCode).first();
 
       const r = await env.DB.prepare(`
         UPDATE exams SET
@@ -310,6 +319,8 @@ export default async function examsHandler(request, env) {
 
       if (r.meta.changes === 0) return json({ error: 'Not found' }, 404);
       const [updated] = await fetchByCodes(env, [examCode]);
+      const changes = diff(before, d, EXAM_LABELS);
+      if (changes) await logChange(request, env, 'exam', examCode, 'עריכה', changes);
       return json(updated, 200);
     }
 
@@ -317,6 +328,7 @@ export default async function examsHandler(request, env) {
     if (method === 'DELETE' && examCode && examCode !== 'bulk') {
       const result = await env.DB.prepare("UPDATE exams SET is_deleted = 1 WHERE exam_code = ? AND is_deleted = 0").bind(examCode).run();
       if (result.meta.changes === 0) return json({ error: 'Not found' }, 404);
+      await logChange(request, env, 'exam', examCode, 'מחיקה');
       return json({ success: true });
     }
 
