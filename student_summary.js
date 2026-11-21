@@ -127,7 +127,8 @@ export default async function studentSummaryHandler(request, env) {
         // סינון חכם: אם המבחן מיועד לכיתה גבוהה יותר, נדלג ולא נציג אותו לתלמיד
         if (exam.target_grade && student.class_grade) {
           const targetGradeVal = getGradeValue(exam.target_grade);
-          if (studentGradeVal > 0 && targetGradeVal > 0 && studentGradeVal < targetGradeVal) {
+          // מבחן שכבר עודכן לתלמיד — נספר תמיד (גם אם המבחן מיועד לכיתה גבוהה)
+          if (studentGradeVal > 0 && targetGradeVal > 0 && studentGradeVal < targetGradeVal && !seMap[student.student_code]?.[exam.exam_code]) {
             return; 
           }
         }
