@@ -1,3 +1,4 @@
+import { isLimitError, phoneErrorText } from './db_errors.js';
 import { getLocalTime } from './time.js';
 import { loadSettings, normalizePhone, writeLog, agoText, decide, nowParts, say } from './phone_access.js';
 import { bonusTotals } from './bonuses.js';
@@ -60,7 +61,10 @@ export async function handleYemotStudents(request, env) {
     const log = row => writeLog(env, { line: 'student', phone, call_id, ...row });
 
     let settings;
-    try { settings = (await loadSettings(env)).student; } catch (e) { settings = { enabled: true, require_phone: true, closed_message: '' }; }
+    try { settings = (await loadSettings(env)).student; } catch (e) {
+        if (isLimitError(e)) return text(`id_list_message=t-${phoneErrorText(e)}&go_to_folder=hangup`);   // המסד לא זמין — אומרים מיד
+        settings = { enabled: true, require_phone: true, closed_message: '' };
+    }
 
     // --- הקו סגור ---
     if (!settings.enabled) {

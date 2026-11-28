@@ -1,3 +1,4 @@
+import { isLimitError, phoneErrorText } from './db_errors.js';
 import { getLocalTime } from './time.js';
 import { phoneGate, logUpdate, loadSettings, normalizePhone, validPhone, isExpired, checkPin, writeLog, say } from './phone_access.js';
 import { audit, describeChange } from './phone_audit.js';
@@ -198,6 +199,7 @@ export async function handleYemotManager(request, env) {
             await logUpdate(env, ctx, student, examCode, passed, 'changed');
             return done(`הציון למבחן ${examCode} שונה ל${passText(passed)}`);
         } catch (e) {
+            if (isLimitError(e)) return text(`id_list_message=t-${phoneErrorText(e)}&go_to_folder=hangup`);
             return askPass('אירעה שגיאה בשמירה, נסו שוב, ');
         }
     }
