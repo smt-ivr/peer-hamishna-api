@@ -1,6 +1,7 @@
 import examsHandler from './exams.js';
 import changeLogHandler from './change_log.js';
 import cyclesHandler from './cycles.js';
+import { archiveDB } from './archive_db.js';
 import studentsHandler from './students.js';
 import studentExamsHandler from './student_exams.js';
 import studentSummaryHandler from './student_summary.js';
@@ -18,7 +19,7 @@ const API_VERSION = "1.7.0";
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, x-api-key', 
+  'Access-Control-Allow-Headers': 'Content-Type, x-api-key, x-cycle', 
 };
 
 export default {
@@ -115,6 +116,15 @@ export default {
                  headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
              });
          }
+      }
+
+      // -- צפייה במחזור שנסגר (x-cycle): קריאה בלבד מהנתונים השמורים של אותו מחזור --
+      const cycleHdr = request.headers.get('x-cycle');
+      if (cycleHdr && !isYemotPath) {
+        const cyc = /^\d+$/.test(cycleHdr) ? await env.DB.prepare('SELECT id, name FROM cycles WHERE id = ? AND ended_at IS NOT NULL').bind(+cycleHdr).first().catch(() => null) : null;
+        if (!cyc) return new Response(JSON.stringify({ error: 'Not found', message: 'המחזור לא נמצא' }), { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        if (request.method !== 'GET') return new Response(JSON.stringify({ error: 'Forbidden', message: `מחזור ${cyc.name} סגור — צפייה בלבד` }), { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        env = { ...env, DB: await archiveDB(env.DB, cyc.id) };
       }
 
       // -- הניתוב המקורי של המערכת --
