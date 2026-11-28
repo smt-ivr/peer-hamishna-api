@@ -2,6 +2,7 @@ import examsHandler from './exams.js';
 import changeLogHandler from './change_log.js';
 import cyclesHandler from './cycles.js';
 import { archiveDB } from './archive_db.js';
+import { phoneErrorText, webError } from './db_errors.js';
 import studentsHandler from './students.js';
 import studentExamsHandler from './student_exams.js';
 import studentSummaryHandler from './student_summary.js';
@@ -194,8 +195,13 @@ export default {
       });
 
     } catch (error) {
-      return new Response(JSON.stringify({ error: error.message }), { 
-        status: 500, 
+      // שיחת טלפון: הודעה מוקלטת וניתוק (במקום תשובה שימות המשיח לא מבין)
+      if (path.startsWith('/peer/api/yemot/')) {
+        return new Response(`id_list_message=t-${phoneErrorText(error)}&go_to_folder=hangup`, { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+      }
+      const w = webError(error);
+      return new Response(JSON.stringify(w.body), { 
+        status: w.status, 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }

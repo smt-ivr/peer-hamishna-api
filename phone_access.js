@@ -1,3 +1,4 @@
+import { phoneErrorText } from './db_errors.js';
 import { getLocalTime } from './time.js';
 
 // ============================================================
@@ -181,7 +182,7 @@ export async function phoneGate(request, env, first) {
         reason = decide(phone, entry, nowParts());
     } catch (e) {
         await writeLog(env, { event: 'call', phone, call_id, reason: 'error', action: 'hangup' });
-        return { block: text('id_list_message=t-אירעה תקלה זמנית במערכת נסו שוב מאוחר יותר&go_to_folder=hangup'), ctx };
+        return { block: text(`id_list_message=t-${phoneErrorText(e)}&go_to_folder=hangup`), ctx };
     }
 
     const allowed = isAllowed(reason);
